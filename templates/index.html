@@ -4,7 +4,7 @@
     <title>Görüntü ve Ses Tabanlı Sohbet Asistanı</title>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <script src="https://cdn.socket.io/4.5.4/socket.io.min.js"></script>
+    <script src="https://cdn.socket.io/4.5.4/socket.io.min.js" defer></script>
     <style>
         body {
             font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif;
@@ -64,6 +64,7 @@
             flex: 1;
             transition: all 0.3s ease;
             box-shadow: 0 2px 4px rgba(0,0,0,0.1);
+            will-change: transform;
         }
         button:hover {
             background-color: #45a049;
@@ -102,6 +103,7 @@
             overflow-y: auto;
             font-size: 16px;
             box-shadow: inset 0 2px 4px rgba(0,0,0,0.05);
+            overscroll-behavior: contain;
         }
         .query {
             color: #0066cc;
@@ -167,6 +169,7 @@
             background-color: #f44336;
             animation: pulse 1.5s infinite;
             display: none; /* Hidden initially */
+            will-change: transform, box-shadow;
         }
         .listening-active .listening-indicator {
             display: block;
@@ -181,6 +184,7 @@
             background-color: #2196F3;
             animation: pulse 1.5s infinite;
             display: none; /* Hidden initially */
+            will-change: transform, box-shadow;
         }
         .speaking-active .speaking-indicator {
             display: block;
@@ -211,7 +215,7 @@
         <h1>Görüntü ve Ses Tabanlı Sohbet Asistanı</h1>
         
         <div class="video-container listening-active">
-            <img id="video" src="{{ url_for('video_feed') }}" alt="Video stream">
+            <img id="video" src="{{ url_for('video_feed') }}" alt="Video stream" loading="eager">
             <div id="listening-indicator" class="listening-indicator"></div>
             <div id="speaking-indicator" class="speaking-indicator"></div>
         </div>
@@ -230,26 +234,42 @@
         </div>
         
         <!-- Hidden audio player -->
-        <audio id="audio-player" controls></audio>
+        <audio id="audio-player" controls preload="none"></audio>
     </div>
 
     <script>
-        // DOM elements
-        const analyzeBtn = document.getElementById('analyze-btn');
-        const listeningBtn = document.getElementById('listening-btn');
-        const transcriptElement = document.getElementById('transcript');
-        const statusElement = document.getElementById('status');
-        const listeningIndicator = document.getElementById('listening-indicator');
-        const speakingIndicator = document.getElementById('speaking-indicator');
-        const audioPlayer = document.getElementById('audio-player');
-        const videoContainer = document.querySelector('.video-container');
+        // DOM elements - use function to get them on-demand to improve page load time
+        const getElements = () => {
+            return {
+                analyzeBtn: document.getElementById('analyze-btn'),
+                listeningBtn: document.getElementById('listening-btn'),
+                transcriptElement: document.getElementById('transcript'),
+                statusElement: document.getElementById('status'),
+                listeningIndicator: document.getElementById('listening-indicator'),
+                speakingIndicator: document.getElementById('speaking-indicator'),
+                audioPlayer: document.getElementById('audio-player'),
+                videoContainer: document.querySelector('.video-container')
+            };
+        };
         
         // Variables
         let isListening = true; // Start with listening active
         let isSpeaking = false; // Is the assistant speaking
         let queuePollingInterval = null;
         let messageCounter = 0;
+        let lastAPICall = 0;
+        const API_COOLDOWN = 2000; // 2 seconds cooldown between API calls
+        let pendingScrolls = [];
         
+        // Debounce function for performance improvement
+        function debounce(func, wait) {
+            let timeout;
+            return function(...args) {
+                clearTimeout(timeout);
+                timeout = setTimeout(() => func.apply(this, args), wait);
+            };
+        }
+
         // Initialize Socket.IO
         const socket = io();
         
@@ -269,26 +289,28 @@
         
         // Function to update listening status
         function updateListeningStatus(listening, reason) {
+            const elements = getElements();
             isListening = listening;
             
             if (listening) {
-                videoContainer.classList.add('listening-active');
-                videoContainer.classList.remove('speaking-active');
-                statusElement.textContent = "Sesli komutlar için dinleme aktif...";
+                elements.videoContainer.classList.add('listening-active');
+                elements.videoContainer.classList.remove('speaking-active');
+                elements.statusElement.textContent = "Sesli komutlar için dinleme aktif...";
                 if (reason === 'tts_complete') {
                     addToTranscript('system-message', 'Asistan konuşmayı bitirdi, dinleme tekrar aktif.');
                 }
             } else {
-                videoContainer.classList.remove('listening-active');
+                elements.videoContainer.classList.remove('listening-active');
                 if (reason === 'processing') {
-                    videoContainer.classList.add('speaking-active');
-                    statusElement.textContent = "İşleniyor ve yanıtlanıyor... Lütfen bekleyin.";
+                    elements.videoContainer.classList.add('speaking-active');
+                    elements.statusElement.textContent = "İşleniyor ve yanıtlanıyor... Lütfen bekleyin.";
                 }
             }
         }
-
-        // Function to add message to transcript
+        
+        // Function to add message to transcript with performance improvements
         function addToTranscript(type, text, audioFile = null) {
+            const elements = getElements();
             const messageId = `message-${messageCounter++}`;
             const messageElement = document.createElement('div');
             messageElement.classList.add(type);
@@ -310,52 +332,69 @@
                     messageElement.appendChild(playButton);
                     
                     // Auto-play the audio
-                    setTimeout(() => playAudio(audioFile), 100);
+                    window.setTimeout(() => playAudio(audioFile), 100);
                 }
             } else if (type === 'system-message') {
                 messageElement.textContent = text;
             }
             
-            transcriptElement.appendChild(messageElement);
-            // Scroll to bottom
-            transcriptElement.scrollTop = transcriptElement.scrollHeight;
+            elements.transcriptElement.appendChild(messageElement);
+            
+            // Schedule a scroll for better performance
+            requestAnimationFrame(() => {
+                elements.transcriptElement.scrollTop = elements.transcriptElement.scrollHeight;
+            });
             
             return messageId;
         }
         
         // Function to play audio and notify server when complete
         function playAudio(audioFile) {
+            const elements = getElements();
             // Set the audio source
-            audioPlayer.src = audioFile;
+            elements.audioPlayer.src = audioFile;
             
             // Show speaking indicator and hide listening indicator
-            videoContainer.classList.add('speaking-active');
-            videoContainer.classList.remove('listening-active');
-            statusElement.textContent = "Asistan konuşuyor...";
+            elements.videoContainer.classList.add('speaking-active');
+            elements.videoContainer.classList.remove('listening-active');
+            elements.statusElement.textContent = "Asistan konuşuyor...";
             
             // Play the audio
-            audioPlayer.play();
+            elements.audioPlayer.play();
             
             // When audio ends, notify the server
-            audioPlayer.onended = function() {
+            elements.audioPlayer.onended = function() {
                 console.log("Audio playback complete");
                 // Notify the server that audio playback is complete
                 socket.emit('audio_completed', {});
                 // Update UI
-                videoContainer.classList.remove('speaking-active');
-                statusElement.textContent = "Sesli komutlar için dinleme aktif...";
+                elements.videoContainer.classList.remove('speaking-active');
+                elements.statusElement.textContent = "Sesli komutlar için dinleme aktif...";
             };
         }
-
-        // Function to analyze the current frame
-        async function analyzeCurrentFrame() {
+        
+        // Function to analyze the current frame with rate limiting
+        const analyzeCurrentFrame = debounce(async function() {
+            const elements = getElements();
+            
+            // Rate limit API calls
+            const now = Date.now();
+            if (now - lastAPICall < API_COOLDOWN) {
+                elements.statusElement.textContent = "Lütfen biraz bekleyin...";
+                setTimeout(() => {
+                    elements.statusElement.textContent = "Sesli komutlar için dinleme aktif...";
+                }, 1000);
+                return;
+            }
+            
             try {
-                analyzeBtn.disabled = true;
-                statusElement.textContent = "Görüntü analiz ediliyor...";
+                lastAPICall = now;
+                elements.analyzeBtn.disabled = true;
+                elements.statusElement.textContent = "Görüntü analiz ediliyor...";
                 
                 // Update UI to show speaking mode
-                videoContainer.classList.add('speaking-active');
-                videoContainer.classList.remove('listening-active');
+                elements.videoContainer.classList.add('speaking-active');
+                elements.videoContainer.classList.remove('listening-active');
                 
                 const response = await fetch('/analyze_current_frame', {
                     method: 'POST'
@@ -372,30 +411,32 @@
                 addToTranscript('query', 'Ekrandaki görüntüyü analiz et.');
                 addToTranscript('answer', data.analysis, data.audio_file);
                 
-                statusElement.textContent = "Analiz tamamlandı ve sesli yanıt verildi.";
+                elements.statusElement.textContent = "Analiz tamamlandı ve sesli yanıt verildi.";
                 
             } catch (error) {
-                statusElement.textContent = `Hata: ${error.message}`;
-                statusElement.classList.add('error');
+                elements.statusElement.textContent = `Hata: ${error.message}`;
+                elements.statusElement.classList.add('error');
                 
                 // Reset UI
-                videoContainer.classList.remove('speaking-active');
-                videoContainer.classList.add('listening-active');
+                elements.videoContainer.classList.remove('speaking-active');
+                elements.videoContainer.classList.add('listening-active');
                 
                 // Notify server to resume listening
                 socket.emit('audio_completed', {});
             } finally {
-                analyzeBtn.disabled = false;
+                elements.analyzeBtn.disabled = false;
                 setTimeout(() => {
-                    statusElement.classList.remove('error');
+                    elements.statusElement.classList.remove('error');
                 }, 3000);
             }
-        }
+        }, 500); // Debounce for 500ms
 
-        // Function to toggle continuous listening
-        async function toggleListening() {
+        // Function to toggle continuous listening (with debounce)
+        const toggleListening = debounce(async function() {
+            const elements = getElements();
+            
             try {
-                listeningBtn.disabled = true;
+                elements.listeningBtn.disabled = true;
                 
                 const response = await fetch('/toggle_listening', {
                     method: 'POST'
@@ -410,8 +451,8 @@
                 isListening = data.is_listening;
                 
                 if (isListening) {
-                    listeningBtn.textContent = "Dinlemeyi Durdur";
-                    listeningBtn.classList.add('listening');
+                    elements.listeningBtn.textContent = "Dinlemeyi Durdur";
+                    elements.listeningBtn.classList.add('listening');
                     updateListeningStatus(true);
                     
                     // Add system message
@@ -420,10 +461,10 @@
                     // Start polling for audio processing results
                     startQueuePolling();
                 } else {
-                    listeningBtn.textContent = "Dinlemeyi Başlat";
-                    listeningBtn.classList.remove('listening');
+                    elements.listeningBtn.textContent = "Dinlemeyi Başlat";
+                    elements.listeningBtn.classList.remove('listening');
                     updateListeningStatus(false);
-                    statusElement.textContent = "Dinleme durdu. Başlatmak için 'Dinlemeyi Başlat' butonuna basın.";
+                    elements.statusElement.textContent = "Dinleme durdu. Başlatmak için 'Dinlemeyi Başlat' butonuna basın.";
                     
                     // Add system message
                     addToTranscript('system-message', 'Sesli komut dinleme durduruldu.');
@@ -433,12 +474,13 @@
                 }
                 
             } catch (error) {
-                statusElement.textContent = `Hata: ${error.message}`;
-                statusElement.classList.add('error');
+                const elements = getElements();
+                elements.statusElement.textContent = `Hata: ${error.message}`;
+                elements.statusElement.classList.add('error');
             } finally {
-                listeningBtn.disabled = false;
+                elements.listeningBtn.disabled = false;
             }
-        }
+        }, 300); // Debounce for 300ms
 
         // Start polling for speech processing results
         function startQueuePolling() {
@@ -456,14 +498,15 @@
                         addToTranscript('query', data.query);
                         addToTranscript('answer', data.answer, data.audio_file);
                     } else if (data.type === 'error') {
+                        const elements = getElements();
                         console.error('Konuşma işleme hatası:', data.message);
-                        statusElement.textContent = `Hata: ${data.message}`;
-                        statusElement.classList.add('error');
+                        elements.statusElement.textContent = `Hata: ${data.message}`;
+                        elements.statusElement.classList.add('error');
                         setTimeout(() => {
-                            statusElement.textContent = isListening ? 
+                            elements.statusElement.textContent = isListening ? 
                                 "Sesli komutlar için dinleme aktif..." : 
                                 "Dinleme durdu. Başlatmak için 'Dinlemeyi Başlat' butonuna basın.";
-                            statusElement.classList.remove('error');
+                            elements.statusElement.classList.remove('error');
                         }, 3000);
                         
                         // Make sure to resume listening
@@ -486,22 +529,25 @@
             }
         }
 
-        // Event listeners
-        analyzeBtn.addEventListener('click', analyzeCurrentFrame);
-        listeningBtn.addEventListener('click', toggleListening);
-
-        // Initialize
-        startQueuePolling(); // Start polling immediately since listening is active by default
+        // Wait for the DOM to be fully loaded before attaching event handlers
+        document.addEventListener('DOMContentLoaded', () => {
+            const elements = getElements();
+            
+            // Event listeners
+            elements.analyzeBtn.addEventListener('click', analyzeCurrentFrame);
+            elements.listeningBtn.addEventListener('click', toggleListening);
+            
+            // Initialize
+            startQueuePolling(); // Start polling immediately since listening is active by default
+        });
 
         // Cleanup on page unload
         window.addEventListener('beforeunload', async () => {
             try {
                 stopQueuePolling();
                 
-                await fetch('/cleanup', {
-                    method: 'POST',
-                    keepalive: true
-                });
+                // Use navigator.sendBeacon for more reliable cleanup during page unload
+                navigator.sendBeacon('/cleanup', '');
             } catch (error) {
                 console.error('Error during cleanup:', error);
             }
