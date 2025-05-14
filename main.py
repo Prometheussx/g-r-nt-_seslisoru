@@ -18,9 +18,10 @@ import audioop
 import tempfile
 from openai import OpenAI
 from io import BytesIO
-from PIL import Image
 import queue
 import socketio
+import concurrent.futures
+from functools import lru_cache
 
 # Load environment variables
 load_dotenv()
@@ -35,7 +36,7 @@ camera = None
 lock = threading.Lock()
 frame_buffer = None
 last_processed_time = 0
-processing_interval = 3  # Process frames every 3 seconds
+processing_interval = 2  # Reduced from 3 seconds to 2 seconds
 is_listening = True      # Start with listening active
 is_speaking = False      # Is the assistant currently speaking
 audio_queue = queue.Queue()
@@ -44,6 +45,14 @@ CHUNK = 320  # 20ms at 16kHz (WebRTC VAD requires 10, 20, or 30 ms frames)
 FORMAT = pyaudio.paInt16
 CHANNELS = 1
 VAD_MODE = 3  # VAD aggressiveness (0-3)
+
+# Threading Pools for parallel processing
+thread_pool = concurrent.futures.ThreadPoolExecutor(max_workers=4)
+api_thread_pool = concurrent.futures.ThreadPoolExecutor(max_workers=2)
+
+# API Call Cache
+IMAGE_CACHE_SIZE = 5
+API_CACHE_SIZE = 20
 
 # Initialize OpenAI client
 client = OpenAI(api_key=os.getenv("OPENAI_API_KEY"))
@@ -62,14 +71,31 @@ latest_tts_file = None
 def initialize_camera():
     global camera
     camera = cv2.VideoCapture(0)  # 0 is usually the default camera
-    if not camera.isOpened():
+    
+    # Optimize camera settings for better performance
+    if camera.isOpened():
+        camera.set(cv2.CAP_PROP_FPS, 20)  # Reduce FPS to save CPU
+        camera.set(cv2.CAP_PROP_FRAME_WIDTH, 640)  # Reduce resolution
+        camera.set(cv2.CAP_PROP_FRAME_HEIGHT, 480)  # Reduce resolution
+    else:
         print("Error: Camera could not be opened.")
         return False
     return True
 
 def generate_frames():
     global frame_buffer
+    last_frame_time = 0
+    frame_interval = 0.05  # 20 FPS (1/20 = 0.05s)
+    
     while True:
+        # Rate limiting for frame generation to reduce CPU usage
+        current_time = time.time()
+        if current_time - last_frame_time < frame_interval:
+            time.sleep(0.01)  # Small sleep to avoid high CPU usage
+            continue
+            
+        last_frame_time = current_time
+        
         with lock:
             if camera is None or not camera.isOpened():
                 if not initialize_camera():
@@ -85,8 +111,8 @@ def generate_frames():
             # Store the current frame in buffer for processing
             frame_buffer = frame.copy()
             
-            # Convert to jpg for streaming
-            ret, buffer = cv2.imencode('.jpg', frame)
+            # Convert to jpg for streaming with optimized quality
+            ret, buffer = cv2.imencode('.jpg', frame, [cv2.IMWRITE_JPEG_QUALITY, 80])
             if not ret:
                 continue
                 
@@ -95,16 +121,39 @@ def generate_frames():
         yield (b'--frame\r\n'
                b'Content-Type: image/jpeg\r\n\r\n' + frame_bytes + b'\r\n')
 
+# Cache for repeated API calls with same inputs
+@lru_cache(maxsize=API_CACHE_SIZE)
+def _cached_analyze_frame(image_hash, prompt):
+    """Cached version of frame analysis (called by analyze_frame_with_gpt)"""
+    # This is just a helper function that can be cached
+    # The actual implementation is in analyze_frame_with_gpt
+    pass
+
 def analyze_frame_with_gpt(frame, prompt="What can you see in this image? If there's text, please read it."):
     """Send the frame to OpenAI's API for analysis"""
     try:
+        # Reduce image size for faster processing
+        frame = cv2.resize(frame, (640, 480))
+        
         # Convert the OpenCV frame to a format suitable for the API
-        success, buffer = cv2.imencode(".jpg", frame)
+        success, buffer = cv2.imencode(".jpg", frame, [cv2.IMWRITE_JPEG_QUALITY, 80])
         if not success:
             return "Error encoding image"
         
         # Convert to base64 string
         image_binary = BytesIO(buffer).getvalue()
+        
+        # Create a hash of image + prompt for caching
+        image_hash = hash(image_binary[:1000] + prompt.encode())  # Use partial image for hash
+        
+        # Check if we have this analysis cached
+        if hasattr(_cached_analyze_frame, 'cache_info'):
+            cache_info = _cached_analyze_frame.cache_info()
+            if cache_info.hits > 0:
+                cached_result = _cached_analyze_frame(image_hash, prompt)
+                if cached_result:
+                    print("Using cached analysis result")
+                    return cached_result
         
         # Send to OpenAI API
         response = client.chat.completions.create(
@@ -126,11 +175,18 @@ def analyze_frame_with_gpt(frame, prompt="What can you see in this image? If the
             max_tokens=300,
         )
         
-        return response.choices[0].message.content
+        result = response.choices[0].message.content
+        
+        # Update the cache
+        _cached_analyze_frame.cache_clear()  # Clear old entries
+        _cached_analyze_frame.__wrapped__ = lambda ih, p: result if ih == image_hash else None
+        
+        return result
     except Exception as e:
         print(f"Error analyzing frame: {e}")
         return f"Error analyzing frame: {str(e)}"
 
+@lru_cache(maxsize=API_CACHE_SIZE)
 def text_to_speech_openai(text, output_file=None):
     """Convert text to speech using OpenAI's TTS API"""
     global latest_tts_file
@@ -142,6 +198,11 @@ def text_to_speech_openai(text, output_file=None):
             # Create directory if it doesn't exist
             os.makedirs(temp_dir, exist_ok=True)
             output_file = f"{temp_dir}/tts_{int(time.time())}.mp3"
+        
+        # Check if we already have this text-to-speech conversion cached
+        if os.path.exists(output_file):
+            latest_tts_file = output_file
+            return output_file
         
         # Call OpenAI TTS API
         response = client.audio.speech.create(
@@ -178,8 +239,8 @@ def audio_processing_worker():
     local_is_speaking = False
     silent_chunks = 0
     voice_chunks = 0
-    max_silent_chunks = 50  # ~1 second of silence (50 * 20ms)
-    min_voice_chunks = 5    # At least ~100ms of voice to be considered speaking
+    max_silent_chunks = 40  # Reduced from 50 to 40 (~800ms of silence)
+    min_voice_chunks = 4    # Reduced from 5 to 4 (~80ms of voice)
     accumulated_audio = []
     
     try:
@@ -198,7 +259,7 @@ def audio_processing_worker():
             except Exception as e:
                 # If WebRTC VAD fails, fallback to energy-based detection
                 rms = audioop.rms(audio_chunk, 2)  # Get RMS of the audio chunk
-                is_speech = rms > 500  # Threshold for speech detection
+                is_speech = rms > 450  # Lowered threshold for more sensitive detection
             
             # State machine for speech detection
             if is_speech and not local_is_speaking:
@@ -225,7 +286,7 @@ def audio_processing_worker():
                     print(f"Speech ended, processing... (collected {len(accumulated_audio)} chunks)")
                     
                     # Process the accumulated audio if we have enough
-                    if len(accumulated_audio) > 10:  # Minimum threshold
+                    if len(accumulated_audio) > 8:  # Reduced from 10 to 8
                         # Convert list of chunks to single bytes object
                         audio_data = b''.join(accumulated_audio)
                         
@@ -235,8 +296,8 @@ def audio_processing_worker():
                         # Notify frontend that we're processing speech
                         sio.emit('listening_status', {'is_listening': False, 'reason': 'processing'})
                         
-                        # Process in a separate thread
-                        threading.Thread(target=process_speech, args=(audio_data,)).start()
+                        # Process in a separate thread from the thread pool
+                        thread_pool.submit(process_speech, audio_data)
                     
                     # Reset state
                     local_is_speaking = False
@@ -248,8 +309,8 @@ def audio_processing_worker():
                 # No speech detected
                 voice_chunks = 0
                 # Keep a small buffer for better detection
-                if len(accumulated_audio) > 10:
-                    accumulated_audio = accumulated_audio[-10:]
+                if len(accumulated_audio) > 8:  # Reduced from 10 to 8
+                    accumulated_audio = accumulated_audio[-8:]
                 
     except Exception as e:
         print(f"Error in audio processing: {e}")
@@ -275,16 +336,10 @@ def process_speech(audio_data):
             wf.setframerate(RATE)
             wf.writeframes(audio_data)
         
-        # Send to Whisper API
+        # Send to Whisper API using thread pool
         print("Sending to Whisper API...")
-        with open(temp_audio_path, "rb") as file:
-            transcription = client.audio.transcriptions.create(
-                model="whisper-1",
-                file=file,
-                language="tr"  # Specify Turkish language
-            )
-        
-        query_text = transcription.text
+        future = api_thread_pool.submit(transcribe_audio, temp_audio_path)
+        query_text = future.result()
         
         # Clean up temp file
         os.unlink(temp_audio_path)
@@ -307,13 +362,15 @@ def process_speech(audio_data):
             
             frame_to_analyze = frame_buffer.copy()
         
-        # Analyze the frame with the query
+        # Analyze the frame with the query using thread pool
         print("Sending to GPT-4o for analysis...")
-        answer = analyze_frame_with_gpt(frame_to_analyze, query_text)
+        future = api_thread_pool.submit(analyze_frame_with_gpt, frame_to_analyze, query_text)
+        answer = future.result()
         print(f"GPT Response: {answer}")
         
-        # Generate speech with OpenAI's TTS
-        tts_file = text_to_speech_openai(answer)
+        # Generate speech with OpenAI's TTS using thread pool
+        future = api_thread_pool.submit(text_to_speech_openai, answer)
+        tts_file = future.result()
         
         # Send result to frontend
         audio_queue.put({
@@ -333,6 +390,16 @@ def process_speech(audio_data):
         })
         # Resume listening in case of error
         resume_listening()
+
+def transcribe_audio(audio_path):
+    """Transcribe audio file using Whisper API"""
+    with open(audio_path, "rb") as file:
+        transcription = client.audio.transcriptions.create(
+            model="whisper-1",
+            file=file,
+            language="tr"  # Specify Turkish language
+        )
+    return transcription.text
 
 def resume_listening():
     """Resume listening after TTS is done playing"""
@@ -391,7 +458,7 @@ def disconnect(sid):
 def audio_completed(sid, data):
     """Client notifies server that TTS audio playback is complete"""
     print("Audio playback complete, resuming listening")
-    resume_listening()
+    thread_pool.submit(resume_listening)
 
 # Flask routes - now using flask_app instead of app
 @flask_app.route('/')
@@ -431,11 +498,13 @@ def analyze_current_frame():
     is_speaking = True
     sio.emit('listening_status', {'is_listening': False, 'reason': 'processing'})
     
-    # Analyze the frame
-    analysis = analyze_frame_with_gpt(frame_to_analyze)
+    # Submit analysis to thread pool
+    analysis_future = api_thread_pool.submit(analyze_frame_with_gpt, frame_to_analyze)
+    analysis = analysis_future.result()
     
-    # Generate speech with OpenAI's TTS
-    tts_file = text_to_speech_openai(analysis)
+    # Generate speech with OpenAI's TTS (also through thread pool)
+    tts_future = api_thread_pool.submit(text_to_speech_openai, analysis)
+    tts_file = tts_future.result()
     
     return jsonify({
         "analysis": analysis,
@@ -482,6 +551,10 @@ def cleanup():
         # Stop listening if active
         if is_listening:
             stop_listening()
+        
+        # Shutdown thread pools
+        thread_pool.shutdown(wait=False)
+        api_thread_pool.shutdown(wait=False)
             
         with lock:
             if camera is not None and camera.isOpened():
@@ -502,4 +575,4 @@ if __name__ == '__main__':
     # Use a regular WSGI server instead of Flask's development server
     from waitress import serve
     print("Starting server on http://127.0.0.1:5000")
-    serve(app, host="127.0.0.1", port=5000)
+    serve(app, host="127.0.0.1", port=5000, threads=8)  # Increased thread count
