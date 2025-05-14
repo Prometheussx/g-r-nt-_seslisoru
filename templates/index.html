@@ -1,0 +1,511 @@
+<!DOCTYPE html>
+<html>
+<head>
+    <title>Görüntü ve Ses Tabanlı Sohbet Asistanı</title>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <script src="https://cdn.socket.io/4.5.4/socket.io.min.js"></script>
+    <style>
+        body {
+            font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif;
+            margin: 0;
+            padding: 20px;
+            background-color: #f5f5f5;
+            display: flex;
+            flex-direction: column;
+            align-items: center;
+        }
+        .container {
+            max-width: 1000px;
+            margin: 0 auto;
+            background-color: white;
+            padding: 20px;
+            border-radius: 10px;
+            box-shadow: 0 4px 6px rgba(0,0,0,0.1);
+            display: flex;
+            flex-direction: column;
+            align-items: center;
+        }
+        h1 {
+            color: #333;
+            text-align: center;
+            margin-bottom: 20px;
+        }
+        .video-container {
+            margin: 10px 0 20px 0;
+            text-align: center;
+            position: relative;
+            width: 100%;
+            max-width: 640px;
+        }
+        #video {
+            width: 100%;
+            max-width: 640px;
+            border: 1px solid #ddd;
+            border-radius: 5px;
+            box-shadow: 0 2px 4px rgba(0,0,0,0.1);
+        }
+        .controls {
+            display: flex;
+            justify-content: space-between;
+            gap: 10px;
+            margin: 20px 0;
+            width: 100%;
+            max-width: 640px;
+        }
+        button {
+            padding: 12px 18px;
+            background-color: #4CAF50;
+            color: white;
+            border: none;
+            border-radius: 5px;
+            cursor: pointer;
+            font-size: 16px;
+            flex: 1;
+            transition: all 0.3s ease;
+            box-shadow: 0 2px 4px rgba(0,0,0,0.1);
+        }
+        button:hover {
+            background-color: #45a049;
+            box-shadow: 0 4px 8px rgba(0,0,0,0.15);
+            transform: translateY(-2px);
+        }
+        button:active {
+            transform: translateY(0);
+        }
+        button:disabled {
+            background-color: #cccccc;
+            cursor: not-allowed;
+            box-shadow: none;
+            transform: none;
+        }
+        .listening {
+            background-color: #2196F3;
+        }
+        .listening:hover {
+            background-color: #0b7dda;
+        }
+        .transcript-container {
+            margin: 20px 0;
+            width: 100%;
+            max-width: 640px;
+        }
+        #transcript {
+            width: 100%;
+            min-height: 200px;
+            max-height: 400px;
+            padding: 15px;
+            border: 1px solid #ddd;
+            border-radius: 5px;
+            background-color: #f9f9f9;
+            white-space: pre-wrap;
+            overflow-y: auto;
+            font-size: 16px;
+            box-shadow: inset 0 2px 4px rgba(0,0,0,0.05);
+        }
+        .query {
+            color: #0066cc;
+            font-weight: bold;
+            margin-top: 15px;
+            margin-bottom: 5px;
+            padding-bottom: 5px;
+            border-bottom: 1px dotted #ccc;
+        }
+        .answer {
+            color: #006400;
+            margin-bottom: 15px;
+            padding-bottom: 10px;
+            border-bottom: 1px solid #eee;
+            position: relative;
+        }
+        .play-button {
+            display: inline-block;
+            margin-left: 10px;
+            color: #2196F3;
+            cursor: pointer;
+            font-size: 14px;
+            padding: 2px 6px;
+            border: 1px solid #2196F3;
+            border-radius: 3px;
+            transition: all 0.2s ease;
+        }
+        .play-button:hover {
+            background-color: #2196F3;
+            color: white;
+        }
+        .system-message {
+            color: #666;
+            font-style: italic;
+            text-align: center;
+            margin: 10px 0;
+        }
+        h2 {
+            color: #444;
+            margin: 5px 0 15px 0;
+            font-size: 20px;
+        }
+        .status {
+            margin-top: 10px;
+            padding: 8px;
+            border-radius: 4px;
+            background-color: #e8f5e9;
+            color: #2e7d32;
+            font-size: 14px;
+            text-align: center;
+        }
+        .error {
+            background-color: #ffebee;
+            color: #c62828;
+        }
+        .listening-indicator {
+            position: absolute;
+            top: 10px;
+            right: 10px;
+            width: 20px;
+            height: 20px;
+            border-radius: 50%;
+            background-color: #f44336;
+            animation: pulse 1.5s infinite;
+            display: none; /* Hidden initially */
+        }
+        .listening-active .listening-indicator {
+            display: block;
+        }
+        .speaking-indicator {
+            position: absolute;
+            top: 10px;
+            left: 10px;
+            width: 20px;
+            height: 20px;
+            border-radius: 50%;
+            background-color: #2196F3;
+            animation: pulse 1.5s infinite;
+            display: none; /* Hidden initially */
+        }
+        .speaking-active .speaking-indicator {
+            display: block;
+        }
+        @keyframes pulse {
+            0% {
+                transform: scale(0.95);
+                box-shadow: 0 0 0 0 rgba(255, 0, 0, 0.7);
+            }
+            
+            70% {
+                transform: scale(1);
+                box-shadow: 0 0 0 10px rgba(255, 0, 0, 0);
+            }
+            
+            100% {
+                transform: scale(0.95);
+                box-shadow: 0 0 0 0 rgba(255, 0, 0, 0);
+            }
+        }
+        #audio-player {
+            display: none;
+        }
+    </style>
+</head>
+<body>
+    <div class="container">
+        <h1>Görüntü ve Ses Tabanlı Sohbet Asistanı</h1>
+        
+        <div class="video-container listening-active">
+            <img id="video" src="{{ url_for('video_feed') }}" alt="Video stream">
+            <div id="listening-indicator" class="listening-indicator"></div>
+            <div id="speaking-indicator" class="speaking-indicator"></div>
+        </div>
+        
+        <div class="controls">
+            <button id="analyze-btn">Ekrandakini Analiz Et</button>
+            <button id="listening-btn" class="listening">Dinlemeyi Durdur</button>
+        </div>
+        
+        <div class="transcript-container">
+            <h2>Sohbet Geçmişi</h2>
+            <div id="transcript">
+                <p class="system-message">Sisteme hoş geldiniz! Kameraya gösterdiğiniz nesneler hakkında sesli sorular sorabilirsiniz.</p>
+            </div>
+            <div class="status" id="status">Sesli komutlar için dinleme aktif...</div>
+        </div>
+        
+        <!-- Hidden audio player -->
+        <audio id="audio-player" controls></audio>
+    </div>
+
+    <script>
+        // DOM elements
+        const analyzeBtn = document.getElementById('analyze-btn');
+        const listeningBtn = document.getElementById('listening-btn');
+        const transcriptElement = document.getElementById('transcript');
+        const statusElement = document.getElementById('status');
+        const listeningIndicator = document.getElementById('listening-indicator');
+        const speakingIndicator = document.getElementById('speaking-indicator');
+        const audioPlayer = document.getElementById('audio-player');
+        const videoContainer = document.querySelector('.video-container');
+        
+        // Variables
+        let isListening = true; // Start with listening active
+        let isSpeaking = false; // Is the assistant speaking
+        let queuePollingInterval = null;
+        let messageCounter = 0;
+        
+        // Initialize Socket.IO
+        const socket = io();
+        
+        // Socket.IO event handlers
+        socket.on('connect', () => {
+            console.log('Connected to server');
+            updateListeningStatus(true);
+        });
+        
+        socket.on('disconnect', () => {
+            console.log('Disconnected from server');
+        });
+        
+        socket.on('listening_status', (data) => {
+            updateListeningStatus(data.is_listening, data.reason);
+        });
+        
+        // Function to update listening status
+        function updateListeningStatus(listening, reason) {
+            isListening = listening;
+            
+            if (listening) {
+                videoContainer.classList.add('listening-active');
+                videoContainer.classList.remove('speaking-active');
+                statusElement.textContent = "Sesli komutlar için dinleme aktif...";
+                if (reason === 'tts_complete') {
+                    addToTranscript('system-message', 'Asistan konuşmayı bitirdi, dinleme tekrar aktif.');
+                }
+            } else {
+                videoContainer.classList.remove('listening-active');
+                if (reason === 'processing') {
+                    videoContainer.classList.add('speaking-active');
+                    statusElement.textContent = "İşleniyor ve yanıtlanıyor... Lütfen bekleyin.";
+                }
+            }
+        }
+
+        // Function to add message to transcript
+        function addToTranscript(type, text, audioFile = null) {
+            const messageId = `message-${messageCounter++}`;
+            const messageElement = document.createElement('div');
+            messageElement.classList.add(type);
+            messageElement.id = messageId;
+            
+            if (type === 'query') {
+                messageElement.textContent = `Siz: ${text}`;
+            } else if (type === 'answer') {
+                messageElement.textContent = `Asistan: ${text}`;
+                
+                // If there's an audio file, add a play button
+                if (audioFile) {
+                    const playButton = document.createElement('span');
+                    playButton.classList.add('play-button');
+                    playButton.textContent = '▶ Dinle';
+                    playButton.onclick = function() {
+                        playAudio(audioFile);
+                    };
+                    messageElement.appendChild(playButton);
+                    
+                    // Auto-play the audio
+                    setTimeout(() => playAudio(audioFile), 100);
+                }
+            } else if (type === 'system-message') {
+                messageElement.textContent = text;
+            }
+            
+            transcriptElement.appendChild(messageElement);
+            // Scroll to bottom
+            transcriptElement.scrollTop = transcriptElement.scrollHeight;
+            
+            return messageId;
+        }
+        
+        // Function to play audio and notify server when complete
+        function playAudio(audioFile) {
+            // Set the audio source
+            audioPlayer.src = audioFile;
+            
+            // Show speaking indicator and hide listening indicator
+            videoContainer.classList.add('speaking-active');
+            videoContainer.classList.remove('listening-active');
+            statusElement.textContent = "Asistan konuşuyor...";
+            
+            // Play the audio
+            audioPlayer.play();
+            
+            // When audio ends, notify the server
+            audioPlayer.onended = function() {
+                console.log("Audio playback complete");
+                // Notify the server that audio playback is complete
+                socket.emit('audio_completed', {});
+                // Update UI
+                videoContainer.classList.remove('speaking-active');
+                statusElement.textContent = "Sesli komutlar için dinleme aktif...";
+            };
+        }
+
+        // Function to analyze the current frame
+        async function analyzeCurrentFrame() {
+            try {
+                analyzeBtn.disabled = true;
+                statusElement.textContent = "Görüntü analiz ediliyor...";
+                
+                // Update UI to show speaking mode
+                videoContainer.classList.add('speaking-active');
+                videoContainer.classList.remove('listening-active');
+                
+                const response = await fetch('/analyze_current_frame', {
+                    method: 'POST'
+                });
+                
+                if (!response.ok) {
+                    const errorData = await response.json();
+                    throw new Error(errorData.error || 'Kare analizi başarısız oldu');
+                }
+                
+                const data = await response.json();
+                
+                // Add to transcript
+                addToTranscript('query', 'Ekrandaki görüntüyü analiz et.');
+                addToTranscript('answer', data.analysis, data.audio_file);
+                
+                statusElement.textContent = "Analiz tamamlandı ve sesli yanıt verildi.";
+                
+            } catch (error) {
+                statusElement.textContent = `Hata: ${error.message}`;
+                statusElement.classList.add('error');
+                
+                // Reset UI
+                videoContainer.classList.remove('speaking-active');
+                videoContainer.classList.add('listening-active');
+                
+                // Notify server to resume listening
+                socket.emit('audio_completed', {});
+            } finally {
+                analyzeBtn.disabled = false;
+                setTimeout(() => {
+                    statusElement.classList.remove('error');
+                }, 3000);
+            }
+        }
+
+        // Function to toggle continuous listening
+        async function toggleListening() {
+            try {
+                listeningBtn.disabled = true;
+                
+                const response = await fetch('/toggle_listening', {
+                    method: 'POST'
+                });
+                
+                if (!response.ok) {
+                    const errorData = await response.json();
+                    throw new Error(errorData.error || 'Dinleme durumu değiştirilemedi');
+                }
+                
+                const data = await response.json();
+                isListening = data.is_listening;
+                
+                if (isListening) {
+                    listeningBtn.textContent = "Dinlemeyi Durdur";
+                    listeningBtn.classList.add('listening');
+                    updateListeningStatus(true);
+                    
+                    // Add system message
+                    addToTranscript('system-message', 'Sesli komut dinleme aktifleştirildi.');
+                    
+                    // Start polling for audio processing results
+                    startQueuePolling();
+                } else {
+                    listeningBtn.textContent = "Dinlemeyi Başlat";
+                    listeningBtn.classList.remove('listening');
+                    updateListeningStatus(false);
+                    statusElement.textContent = "Dinleme durdu. Başlatmak için 'Dinlemeyi Başlat' butonuna basın.";
+                    
+                    // Add system message
+                    addToTranscript('system-message', 'Sesli komut dinleme durduruldu.');
+                    
+                    // Stop polling
+                    stopQueuePolling();
+                }
+                
+            } catch (error) {
+                statusElement.textContent = `Hata: ${error.message}`;
+                statusElement.classList.add('error');
+            } finally {
+                listeningBtn.disabled = false;
+            }
+        }
+
+        // Start polling for speech processing results
+        function startQueuePolling() {
+            if (queuePollingInterval) {
+                clearInterval(queuePollingInterval);
+            }
+            
+            queuePollingInterval = setInterval(async () => {
+                try {
+                    const response = await fetch('/get_audio_queue');
+                    const data = await response.json();
+                    
+                    if (data.type === 'conversation') {
+                        // Add to transcript
+                        addToTranscript('query', data.query);
+                        addToTranscript('answer', data.answer, data.audio_file);
+                    } else if (data.type === 'error') {
+                        console.error('Konuşma işleme hatası:', data.message);
+                        statusElement.textContent = `Hata: ${data.message}`;
+                        statusElement.classList.add('error');
+                        setTimeout(() => {
+                            statusElement.textContent = isListening ? 
+                                "Sesli komutlar için dinleme aktif..." : 
+                                "Dinleme durdu. Başlatmak için 'Dinlemeyi Başlat' butonuna basın.";
+                            statusElement.classList.remove('error');
+                        }, 3000);
+                        
+                        // Make sure to resume listening
+                        socket.emit('audio_completed', {});
+                    }
+                } catch (error) {
+                    // Ignore errors from empty queue
+                    if (error.name !== 'SyntaxError') {
+                        console.error('Queue polling error:', error);
+                    }
+                }
+            }, 500);  // Poll every 500ms
+        }
+
+        // Stop polling
+        function stopQueuePolling() {
+            if (queuePollingInterval) {
+                clearInterval(queuePollingInterval);
+                queuePollingInterval = null;
+            }
+        }
+
+        // Event listeners
+        analyzeBtn.addEventListener('click', analyzeCurrentFrame);
+        listeningBtn.addEventListener('click', toggleListening);
+
+        // Initialize
+        startQueuePolling(); // Start polling immediately since listening is active by default
+
+        // Cleanup on page unload
+        window.addEventListener('beforeunload', async () => {
+            try {
+                stopQueuePolling();
+                
+                await fetch('/cleanup', {
+                    method: 'POST',
+                    keepalive: true
+                });
+            } catch (error) {
+                console.error('Error during cleanup:', error);
+            }
+        });
+    </script>
+</body>
+</html>
