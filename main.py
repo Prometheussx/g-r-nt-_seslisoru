@@ -36,14 +36,20 @@ lock = threading.Lock()
 frame_buffer = None
 last_processed_time = 0
 processing_interval = 2  # Reduced from 3 seconds to 2 seconds
-is_listening = True      # Start with listening active
+is_listening = False     # Active listening off by default
 is_speaking = False      # Is the assistant currently speaking
+is_passive_listening = False  # Passive listening initially off
 audio_queue = queue.Queue()
 RATE = 16000
 CHUNK = 320  # 20ms at 16kHz (WebRTC VAD requires 10, 20, or 30 ms frames)
 FORMAT = pyaudio.paInt16
 CHANNELS = 1
 VAD_MODE = 3  # VAD aggressiveness (0-3)
+
+# Sound detection thresholds
+ENERGY_THRESHOLD = 450  # Minimum energy level to consider as sound
+PASSIVE_ENERGY_THRESHOLD = 350  # Lower threshold for passive detection
+SOUND_DURATION_THRESHOLD = 4  # Required consecutive chunks with sound to activate (~80ms)
 
 # Threading Pools for parallel processing
 thread_pool = concurrent.futures.ThreadPoolExecutor(max_workers=4)
@@ -62,7 +68,9 @@ vad = webrtcvad.Vad(VAD_MODE)
 # Audio processing thread variables
 stop_listening_event = threading.Event()
 pause_listening_event = threading.Event()
+passive_stop_event = threading.Event()
 audio_processing_thread = None
+passive_listening_thread = None
 
 # Keep track of the latest TTS audio file
 latest_tts_file = None
@@ -172,6 +180,59 @@ def text_to_speech_openai(text, output_file=None):
         print(f"Error in text to speech: {e}")
         return None
 
+def passive_listening_worker():
+    """Background thread to monitor audio for sound activity"""
+    global is_listening, is_passive_listening
+    
+    print("Starting passive listening mode...")
+    is_passive_listening = True
+    
+    p = pyaudio.PyAudio()
+    stream = p.open(format=FORMAT,
+                   channels=CHANNELS,
+                   rate=RATE,
+                   input=True,
+                   frames_per_buffer=CHUNK)
+    
+    # Variables for sound detection
+    sound_detected_count = 0
+    
+    try:
+        while not passive_stop_event.is_set():
+            # Skip if we're actively processing speech or already in active mode
+            if is_listening or is_speaking:
+                time.sleep(0.1)
+                sound_detected_count = 0
+                continue
+                
+            audio_chunk = stream.read(CHUNK, exception_on_overflow=False)
+            
+            # Energy-based detection for passive mode
+            rms = audioop.rms(audio_chunk, 2)
+            
+            if rms > PASSIVE_ENERGY_THRESHOLD:
+                sound_detected_count += 1
+                
+                # If sound persists for enough chunks, activate full listening
+                if sound_detected_count >= SOUND_DURATION_THRESHOLD:
+                    print("Sound detected, activating listening mode...")
+                    # Activate listening mode
+                    start_listening()
+                    sound_detected_count = 0
+            else:
+                sound_detected_count = max(0, sound_detected_count - 1)  # Decay counter if no sound
+                
+            time.sleep(0.01)  # Small sleep to reduce CPU usage
+                
+    except Exception as e:
+        print(f"Error in passive listening: {e}")
+    finally:
+        stream.stop_stream()
+        stream.close()
+        p.terminate()
+        is_passive_listening = False
+        print("Stopped passive listening")
+
 def audio_processing_worker():
     """Background thread to continuously process audio"""
     global is_listening, is_speaking
@@ -183,14 +244,14 @@ def audio_processing_worker():
                    input=True,
                    frames_per_buffer=CHUNK)
     
-    print("Starting continuous voice detection...")
+    print("Starting active voice detection...")
     
     # Variables for voice detection
     local_is_speaking = False
     silent_chunks = 0
     voice_chunks = 0
-    max_silent_chunks = 40  # Reduced from 50 to 40 (~800ms of silence)
-    min_voice_chunks = 4    # Reduced from 5 to 4 (~80ms of voice)
+    max_silent_chunks = 40  # ~800ms of silence
+    min_voice_chunks = 4    # ~80ms of voice
     accumulated_audio = []
     
     try:
@@ -208,8 +269,8 @@ def audio_processing_worker():
                 is_speech = vad.is_speech(audio_chunk, RATE)
             except Exception as e:
                 # If WebRTC VAD fails, fallback to energy-based detection
-                rms = audioop.rms(audio_chunk, 2)  # Get RMS of the audio chunk
-                is_speech = rms > 450  # Lowered threshold for more sensitive detection
+                rms = audioop.rms(audio_chunk, 2)
+                is_speech = rms > ENERGY_THRESHOLD
             
             # State machine for speech detection
             if is_speech and not local_is_speaking:
@@ -236,7 +297,7 @@ def audio_processing_worker():
                     print(f"Speech ended, processing... (collected {len(accumulated_audio)} chunks)")
                     
                     # Process the accumulated audio if we have enough
-                    if len(accumulated_audio) > 8:  # Reduced from 10 to 8
+                    if len(accumulated_audio) > 8:
                         # Convert list of chunks to single bytes object
                         audio_data = b''.join(accumulated_audio)
                         
@@ -258,8 +319,10 @@ def audio_processing_worker():
             elif not is_speech and not local_is_speaking:
                 # No speech detected
                 voice_chunks = 0
+                silent_chunks += 1
+                
                 # Keep a small buffer for better detection
-                if len(accumulated_audio) > 8:  # Reduced from 10 to 8
+                if len(accumulated_audio) > 8:
                     accumulated_audio = accumulated_audio[-8:]
                 
     except Exception as e:
@@ -268,7 +331,7 @@ def audio_processing_worker():
         stream.stop_stream()
         stream.close()
         p.terminate()
-        print("Stopped continuous voice detection")
+        print("Stopped active voice detection")
 
 def process_speech(audio_data):
     """Process detected speech and get response"""
@@ -296,8 +359,8 @@ def process_speech(audio_data):
         
         if not query_text or query_text.strip() == "":
             print("Empty transcription")
-            # Resume listening
-            resume_listening()
+            # Return to passive mode
+            stop_active_return_to_passive()
             return
             
         print(f"Transcribed: {query_text}")
@@ -317,14 +380,14 @@ def process_speech(audio_data):
                     frame_to_analyze = frame_buffer.copy()
                 else:
                     print("No frame available")
-                    resume_listening()
+                    stop_active_return_to_passive()
                     return
             # Fall back to the global frame buffer
             elif frame_buffer is not None:
                 frame_to_analyze = frame_buffer.copy()
             else:
                 print("No frame available")
-                resume_listening()
+                stop_active_return_to_passive()
                 return
             
         # Analyze the frame with the query using thread pool
@@ -353,26 +416,49 @@ def process_speech(audio_data):
             "type": "error",
             "message": str(e)
         })
-        # Resume listening in case of error
-        resume_listening()
+        # Return to passive mode in case of error
+        stop_active_return_to_passive()
 
 def transcribe_audio(audio_path):
     """Transcribe audio file using Whisper API"""
-    with open(audio_path, "rb") as file:
-        transcription = client.audio.transcriptions.create(
-            model="whisper-1",
-            file=file,
-            language="tr"  # Specify Turkish language
-        )
-    return transcription.text
+    try:
+        with open(audio_path, "rb") as file:
+            transcription = client.audio.transcriptions.create(
+                model="whisper-1",
+                file=file
+                # Letting Whisper auto-detect the language
+            )
+        return transcription.text
+    except Exception as e:
+        print(f"Error in transcription: {e}")
+        return ""
 
 def resume_listening():
     """Resume listening after TTS is done playing"""
     global is_speaking
     is_speaking = False
     pause_listening_event.clear()
-    # Notify frontend that we're listening again
-    sio.emit('listening_status', {'is_listening': True, 'reason': 'tts_complete'})
+    
+    # After TTS playback is complete, go back to passive listening mode
+    stop_active_return_to_passive()
+
+def stop_active_return_to_passive():
+    """Stop active listening and return to passive mode"""
+    # Stop active listening
+    stop_listening()
+    
+    # Make sure passive listening is running
+    ensure_passive_listening()
+    
+    # Notify frontend of mode change
+    sio.emit('listening_status', {'is_listening': False, 'reason': 'passive'})
+
+def ensure_passive_listening():
+    """Ensure passive listening is running"""
+    global is_passive_listening, passive_listening_thread
+    
+    if not is_passive_listening or passive_listening_thread is None or not passive_listening_thread.is_alive():
+        start_passive_listening()
 
 def start_listening():
     """Start the continuous listening thread"""
@@ -388,6 +474,7 @@ def start_listening():
     audio_processing_thread.daemon = True
     audio_processing_thread.start()
     is_listening = True
+    sio.emit('listening_status', {'is_listening': True, 'reason': 'activated'})
     return True
 
 def stop_listening():
@@ -399,9 +486,38 @@ def stop_listening():
         return False
     
     stop_listening_event.set()
-    if audio_processing_thread.is_alive():
-        audio_processing_thread.join(timeout=1.0)
     is_listening = False
+    
+    # Don't wait for the thread to terminate - it may block if reading from the stream
+    # Instead let it finish naturally on its next iteration
+    return True
+
+def start_passive_listening():
+    """Start the passive sound detection thread"""
+    global passive_listening_thread, passive_stop_event, is_passive_listening
+    
+    if passive_listening_thread is not None and passive_listening_thread.is_alive():
+        print("Passive listening already active")
+        return False
+    
+    passive_stop_event.clear()
+    passive_listening_thread = threading.Thread(target=passive_listening_worker)
+    passive_listening_thread.daemon = True
+    passive_listening_thread.start()
+    return True
+
+def stop_passive_listening():
+    """Stop the passive sound detection thread"""
+    global passive_listening_thread, passive_stop_event, is_passive_listening
+    
+    if passive_listening_thread is None or not passive_listening_thread.is_alive():
+        print("Passive listening not active")
+        return False
+    
+    passive_stop_event.set()
+    is_passive_listening = False
+    
+    # Don't wait for the thread to terminate - same reason as active listening
     return True
 
 def pause_listening():
@@ -422,6 +538,15 @@ def connect(sid, environ):
     client_frames[sid] = None
     # Tell client to start sending camera frames
     sio.emit('request_camera', {}, room=sid)
+    # Update client about current status
+    if is_speaking:
+        sio.emit('listening_status', {'is_listening': False, 'reason': 'speaking'}, room=sid)
+    elif is_listening:
+        sio.emit('listening_status', {'is_listening': True, 'reason': 'active'}, room=sid)
+    elif is_passive_listening:
+        sio.emit('listening_status', {'is_listening': False, 'reason': 'passive'}, room=sid)
+    else:
+        sio.emit('listening_status', {'is_listening': False, 'reason': 'inactive'}, room=sid)
 
 @sio.event
 def disconnect(sid):
@@ -480,7 +605,7 @@ def client_frame(sid, data):
     except Exception as e:
         print(f"Error processing client frame: {e}")
 
-# Flask routes - now using flask_app instead of app
+# Flask routes
 @flask_app.route('/')
 def index():
     """Render the main page"""
@@ -535,17 +660,29 @@ def analyze_current_frame():
 
 @flask_app.route('/toggle_listening', methods=['POST'])
 def toggle_listening_route():
-    """Toggle continuous listening mode"""
-    global is_listening
+    """Toggle between passive and active listening modes"""
+    global is_listening, is_passive_listening
     
+    # If active listening is on
     if is_listening:
-        success = stop_listening()
+        # Switch to passive
+        stop_active_return_to_passive()
+        mode = "passive"
+    elif is_passive_listening:
+        # If passive is on, switch to active
+        stop_passive_listening()
+        start_listening()
+        mode = "active"
     else:
-        success = start_listening()
+        # If nothing is on, start with passive
+        start_passive_listening()
+        mode = "passive" 
     
     return jsonify({
-        "success": success,
-        "is_listening": is_listening
+        "success": True,
+        "is_listening": is_listening,
+        "is_passive_listening": is_passive_listening,
+        "mode": mode
     })
 
 @flask_app.route('/get_audio_queue', methods=['GET'])
@@ -565,6 +702,25 @@ def serve_audio(filename):
     """Serve the generated audio files"""
     return send_file(f"static/audio/{filename}")
 
+@flask_app.route('/listening_status', methods=['GET'])
+def get_listening_status():
+    """Get the current listening status"""
+    if is_speaking:
+        status = "speaking"
+    elif is_listening:
+        status = "active"
+    elif is_passive_listening:
+        status = "passive"
+    else:
+        status = "inactive"
+        
+    return jsonify({
+        "is_listening": is_listening,
+        "is_passive_listening": is_passive_listening,
+        "is_speaking": is_speaking,
+        "status": status
+    })
+
 @flask_app.route('/cleanup', methods=['POST'])
 def cleanup():
     """Clean up resources before closing"""
@@ -572,6 +728,10 @@ def cleanup():
         # Stop listening if active
         if is_listening:
             stop_listening()
+        
+        # Stop passive listening if active
+        if is_passive_listening:
+            stop_passive_listening()
         
         # Shutdown thread pools
         thread_pool.shutdown(wait=False)
@@ -589,10 +749,11 @@ if __name__ == '__main__':
     # Create static/audio directory if it doesn't exist
     os.makedirs("static/audio", exist_ok=True)
     
-    # Start listening automatically when the app starts
-    start_listening()
+    # Start in passive listening mode by default
+    print("Starting in passive listening mode")
+    start_passive_listening()
     
     # Use a regular WSGI server instead of Flask's development server
     from waitress import serve
     print("Starting server on http://127.0.0.1:5000")
-    serve(app, host="127.0.0.1", port=5000, threads=8)  # Increased thread count
+    serve(app, host="127.0.0.1", port=5000, threads=8)
