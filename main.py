@@ -309,6 +309,9 @@ def audio_processing_worker():
                         
                         # Process in a separate thread from the thread pool
                         thread_pool.submit(process_speech, audio_data)
+                    else:
+                        # If not enough speech, return to passive mode
+                        stop_active_return_to_passive()
                     
                     # Reset state
                     local_is_speaking = False
@@ -324,6 +327,12 @@ def audio_processing_worker():
                 # Keep a small buffer for better detection
                 if len(accumulated_audio) > 8:
                     accumulated_audio = accumulated_audio[-8:]
+                    
+                # If extended silence after activation, return to passive mode
+                if silent_chunks > max_silent_chunks * 2:
+                    print("Extended silence, returning to passive mode")
+                    stop_active_return_to_passive()
+                    break
                 
     except Exception as e:
         print(f"Error in audio processing: {e}")
@@ -332,6 +341,8 @@ def audio_processing_worker():
         stream.close()
         p.terminate()
         print("Stopped active voice detection")
+        # Make sure we return to passive listening if this thread ends
+        ensure_passive_listening()
 
 def process_speech(audio_data):
     """Process detected speech and get response"""
@@ -439,11 +450,18 @@ def resume_listening():
     is_speaking = False
     pause_listening_event.clear()
     
-    # After TTS playback is complete, go back to passive listening mode
+    # KRITIK: Ses bittiğinde pasif moda geç
+    print("Audio finished playing, returning to passive listening mode")
     stop_active_return_to_passive()
 
 def stop_active_return_to_passive():
     """Stop active listening and return to passive mode"""
+    global is_listening, is_speaking
+    
+    # Reset flags
+    is_listening = False
+    is_speaking = False
+    
     # Stop active listening
     stop_listening()
     
@@ -467,6 +485,9 @@ def start_listening():
     if audio_processing_thread is not None and audio_processing_thread.is_alive():
         print("Already listening")
         return False
+    
+    # Make sure we stop passive listening first
+    stop_passive_listening()
     
     stop_listening_event.clear()
     pause_listening_event.clear()
@@ -504,6 +525,7 @@ def start_passive_listening():
     passive_listening_thread = threading.Thread(target=passive_listening_worker)
     passive_listening_thread.daemon = True
     passive_listening_thread.start()
+    is_passive_listening = True
     return True
 
 def stop_passive_listening():
