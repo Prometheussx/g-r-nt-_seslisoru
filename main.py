@@ -32,7 +32,6 @@ sio = socketio.Server(async_mode='threading', cors_allowed_origins='*')
 app = socketio.WSGIApp(sio, flask_app)
 
 # Global variables
-camera = None
 lock = threading.Lock()
 frame_buffer = None
 last_processed_time = 0
@@ -68,65 +67,16 @@ audio_processing_thread = None
 # Keep track of the latest TTS audio file
 latest_tts_file = None
 
-def initialize_camera():
-    global camera
-    camera = cv2.VideoCapture(0)  # 0 is usually the default camera
-    
-    # Optimize camera settings for better performance
-    if camera.isOpened():
-        camera.set(cv2.CAP_PROP_FPS, 20)  # Reduce FPS to save CPU
-        camera.set(cv2.CAP_PROP_FRAME_WIDTH, 640)  # Reduce resolution
-        camera.set(cv2.CAP_PROP_FRAME_HEIGHT, 480)  # Reduce resolution
-    else:
-        print("Error: Camera could not be opened.")
-        return False
-    return True
-
-def generate_frames():
-    global frame_buffer
-    last_frame_time = 0
-    frame_interval = 0.05  # 20 FPS (1/20 = 0.05s)
-    
-    while True:
-        # Rate limiting for frame generation to reduce CPU usage
-        current_time = time.time()
-        if current_time - last_frame_time < frame_interval:
-            time.sleep(0.01)  # Small sleep to avoid high CPU usage
-            continue
-            
-        last_frame_time = current_time
-        
-        with lock:
-            if camera is None or not camera.isOpened():
-                if not initialize_camera():
-                    time.sleep(1)
-                    continue
-
-            success, frame = camera.read()
-            if not success:
-                print("Failed to read frame")
-                time.sleep(0.1)
-                continue
-
-            # Store the current frame in buffer for processing
-            frame_buffer = frame.copy()
-            
-            # Convert to jpg for streaming with optimized quality
-            ret, buffer = cv2.imencode('.jpg', frame, [cv2.IMWRITE_JPEG_QUALITY, 80])
-            if not ret:
-                continue
-                
-            frame_bytes = buffer.tobytes()
-            
-        yield (b'--frame\r\n'
-               b'Content-Type: image/jpeg\r\n\r\n' + frame_bytes + b'\r\n')
+# Client frame storage - key is the client session ID, value is their latest frame
+client_frames = {}
+# Default client sid for thread context where request is not available
+default_client_sid = None
 
 # Cache for repeated API calls with same inputs
 @lru_cache(maxsize=API_CACHE_SIZE)
 def _cached_analyze_frame(image_hash, prompt):
     """Cached version of frame analysis (called by analyze_frame_with_gpt)"""
     # This is just a helper function that can be cached
-    # The actual implementation is in analyze_frame_with_gpt
     pass
 
 def analyze_frame_with_gpt(frame, prompt="What can you see in this image? If there's text, please read it."):
@@ -354,14 +304,29 @@ def process_speech(audio_data):
         
         # Get current frame for analysis
         with lock:
-            if frame_buffer is None:
+            # Use default client sid if available
+            if default_client_sid and default_client_sid in client_frames and client_frames[default_client_sid] is not None:
+                frame_to_analyze = client_frames[default_client_sid].copy()
+            # Otherwise use the first available client frame
+            elif client_frames:
+                # Use the most recent client's frame
+                sid = list(client_frames.keys())[0]
+                if client_frames[sid] is not None:
+                    frame_to_analyze = client_frames[sid].copy()
+                elif frame_buffer is not None:
+                    frame_to_analyze = frame_buffer.copy()
+                else:
+                    print("No frame available")
+                    resume_listening()
+                    return
+            # Fall back to the global frame buffer
+            elif frame_buffer is not None:
+                frame_to_analyze = frame_buffer.copy()
+            else:
                 print("No frame available")
-                # Resume listening
                 resume_listening()
                 return
             
-            frame_to_analyze = frame_buffer.copy()
-        
         # Analyze the frame with the query using thread pool
         print("Sending to GPT-4o for analysis...")
         future = api_thread_pool.submit(analyze_frame_with_gpt, frame_to_analyze, query_text)
@@ -449,10 +414,28 @@ def pause_listening():
 @sio.event
 def connect(sid, environ):
     print(f"Client connected: {sid}")
+    global default_client_sid
+    # Set as default client if we don't have one yet
+    if default_client_sid is None:
+        default_client_sid = sid
+    # Initialize client's frame storage
+    client_frames[sid] = None
+    # Tell client to start sending camera frames
+    sio.emit('request_camera', {}, room=sid)
 
 @sio.event
 def disconnect(sid):
     print(f"Client disconnected: {sid}")
+    global default_client_sid
+    # Clean up client's frame storage
+    if sid in client_frames:
+        del client_frames[sid]
+    # Reset default client if this was the default
+    if default_client_sid == sid:
+        if client_frames:  # If there are other clients
+            default_client_sid = next(iter(client_frames.keys()))
+        else:
+            default_client_sid = None
     
 @sio.event
 def audio_completed(sid, data):
@@ -460,22 +443,53 @@ def audio_completed(sid, data):
     print("Audio playback complete, resuming listening")
     thread_pool.submit(resume_listening)
 
+@sio.event
+def client_frame(sid, data):
+    """Receive camera frame from client"""
+    try:
+        # Decode base64 image from client
+        image_data = data.get('image')
+        if not image_data:
+            return
+        
+        # Remove data URL prefix if present
+        if image_data.startswith('data:image'):
+            image_data = image_data.split(',')[1]
+            
+        # Decode base64 string
+        image_bytes = base64.b64decode(image_data)
+        
+        # Convert to numpy array
+        nparr = np.frombuffer(image_bytes, np.uint8)
+        
+        # Decode image with OpenCV
+        frame = cv2.imdecode(nparr, cv2.IMREAD_COLOR)
+        
+        if frame is None:
+            print("Failed to decode frame")
+            return
+            
+        # Store the frame for this client
+        with lock:
+            client_frames[sid] = frame
+            
+            # Also update global frame buffer for compatibility with existing code
+            global frame_buffer
+            frame_buffer = frame
+            
+    except Exception as e:
+        print(f"Error processing client frame: {e}")
+
 # Flask routes - now using flask_app instead of app
 @flask_app.route('/')
 def index():
     """Render the main page"""
     return render_template('index.html')
 
-@flask_app.route('/video_feed')
-def video_feed():
-    """Video streaming route"""
-    return Response(generate_frames(),
-                    mimetype='multipart/x-mixed-replace; boundary=frame')
-
 @flask_app.route('/analyze_current_frame', methods=['POST'])
 def analyze_current_frame():
     """Analyze the current frame with GPT-4 Vision"""
-    global frame_buffer, last_processed_time
+    global last_processed_time
     
     current_time = time.time()
     
@@ -483,12 +497,20 @@ def analyze_current_frame():
     if current_time - last_processed_time < processing_interval:
         return jsonify({"error": "Please wait before sending another request"}), 429
     
+    # Get client's session ID from request
+    sid = request.sid if hasattr(request, 'sid') else None
+    
     with lock:
-        if frame_buffer is None:
+        # Use client-specific frame if available
+        if sid and sid in client_frames and client_frames[sid] is not None:
+            frame_to_analyze = client_frames[sid].copy()
+        elif default_client_sid and default_client_sid in client_frames and client_frames[default_client_sid] is not None:
+            frame_to_analyze = client_frames[default_client_sid].copy()
+        elif frame_buffer is not None:
+            # Fall back to global frame buffer
+            frame_to_analyze = frame_buffer.copy()
+        else:
             return jsonify({"error": "No frame available"}), 404
-        
-        # Make a copy to avoid thread issues
-        frame_to_analyze = frame_buffer.copy()
     
     # Update the last processed time
     last_processed_time = current_time
@@ -546,7 +568,6 @@ def serve_audio(filename):
 @flask_app.route('/cleanup', methods=['POST'])
 def cleanup():
     """Clean up resources before closing"""
-    global camera
     try:
         # Stop listening if active
         if is_listening:
@@ -555,11 +576,11 @@ def cleanup():
         # Shutdown thread pools
         thread_pool.shutdown(wait=False)
         api_thread_pool.shutdown(wait=False)
-            
+        
+        # Clear all client frames
         with lock:
-            if camera is not None and camera.isOpened():
-                camera.release()
-                camera = None
+            client_frames.clear()
+            
         return jsonify({"status": "success"})
     except Exception as e:
         return jsonify({"error": str(e)}), 500
@@ -568,7 +589,6 @@ if __name__ == '__main__':
     # Create static/audio directory if it doesn't exist
     os.makedirs("static/audio", exist_ok=True)
     
-    initialize_camera()
     # Start listening automatically when the app starts
     start_listening()
     
