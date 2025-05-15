@@ -1,557 +1,579 @@
 <!DOCTYPE html>
-<html>
+<html lang="tr">
 <head>
-    <title>Görüntü ve Ses Tabanlı Sohbet Asistanı</title>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <script src="https://cdn.socket.io/4.5.4/socket.io.min.js" defer></script>
+    <title>Görüntü Sesli Soru Uygulaması</title>
     <style>
         body {
             font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif;
-            margin: 0;
-            padding: 20px;
-            background-color: #f5f5f5;
-            display: flex;
-            flex-direction: column;
-            align-items: center;
-        }
-        .container {
-            max-width: 1000px;
+            max-width: 800px;
             margin: 0 auto;
-            background-color: white;
             padding: 20px;
-            border-radius: 10px;
-            box-shadow: 0 4px 6px rgba(0,0,0,0.1);
-            display: flex;
-            flex-direction: column;
-            align-items: center;
-        }
-        h1 {
+            background-color: #f7f9fc;
             color: #333;
-            text-align: center;
-            margin-bottom: 20px;
         }
-        .video-container {
-            margin: 10px 0 20px 0;
+        
+        h1 {
+            color: #2c3e50;
             text-align: center;
+        }
+        
+        .camera-container {
             position: relative;
-            width: 100%;
             max-width: 640px;
+            margin: 0 auto;
+            border-radius: 8px;
+            overflow: hidden;
+            box-shadow: 0 4px 12px rgba(0, 0, 0, 0.15);
         }
-        #video {
+        
+        #camera {
             width: 100%;
-            max-width: 640px;
-            border: 1px solid #ddd;
-            border-radius: 5px;
-            box-shadow: 0 2px 4px rgba(0,0,0,0.1);
+            border-radius: 8px;
+            display: block;
         }
+        
         .controls {
+            margin-top: 20px;
             display: flex;
-            justify-content: space-between;
-            gap: 10px;
-            margin: 20px 0;
-            width: 100%;
-            max-width: 640px;
+            justify-content: center;
+            gap: 15px;
         }
+        
         button {
-            padding: 12px 18px;
-            background-color: #4CAF50;
+            background: #3498db;
             color: white;
             border: none;
+            padding: 10px 20px;
             border-radius: 5px;
             cursor: pointer;
             font-size: 16px;
-            flex: 1;
-            transition: all 0.3s ease;
-            box-shadow: 0 2px 4px rgba(0,0,0,0.1);
-            will-change: transform;
+            transition: background 0.3s;
         }
+        
         button:hover {
-            background-color: #45a049;
-            box-shadow: 0 4px 8px rgba(0,0,0,0.15);
-            transform: translateY(-2px);
+            background: #2980b9;
         }
-        button:active {
-            transform: translateY(0);
-        }
+        
         button:disabled {
-            background-color: #cccccc;
+            background: #bdc3c7;
             cursor: not-allowed;
-            box-shadow: none;
-            transform: none;
         }
-        .listening {
-            background-color: #2196F3;
+        
+        button#toggle-listening.active {
+            background: #e74c3c;
         }
-        .listening:hover {
-            background-color: #0b7dda;
-        }
-        .transcript-container {
-            margin: 20px 0;
-            width: 100%;
-            max-width: 640px;
-        }
-        #transcript {
-            width: 100%;
-            min-height: 200px;
-            max-height: 400px;
-            padding: 15px;
-            border: 1px solid #ddd;
-            border-radius: 5px;
-            background-color: #f9f9f9;
-            white-space: pre-wrap;
-            overflow-y: auto;
-            font-size: 16px;
-            box-shadow: inset 0 2px 4px rgba(0,0,0,0.05);
-            overscroll-behavior: contain;
-        }
-        .query {
-            color: #0066cc;
-            font-weight: bold;
-            margin-top: 15px;
-            margin-bottom: 5px;
-            padding-bottom: 5px;
-            border-bottom: 1px dotted #ccc;
-        }
-        .answer {
-            color: #006400;
-            margin-bottom: 15px;
-            padding-bottom: 10px;
-            border-bottom: 1px solid #eee;
-            position: relative;
-        }
-        .play-button {
-            display: inline-block;
-            margin-left: 10px;
-            color: #2196F3;
-            cursor: pointer;
-            font-size: 14px;
-            padding: 2px 6px;
-            border: 1px solid #2196F3;
-            border-radius: 3px;
-            transition: all 0.2s ease;
-        }
-        .play-button:hover {
-            background-color: #2196F3;
-            color: white;
-        }
-        .system-message {
-            color: #666;
-            font-style: italic;
-            text-align: center;
-            margin: 10px 0;
-        }
-        h2 {
-            color: #444;
-            margin: 5px 0 15px 0;
-            font-size: 20px;
-        }
+        
         .status {
-            margin-top: 10px;
-            padding: 8px;
-            border-radius: 4px;
-            background-color: #e8f5e9;
-            color: #2e7d32;
-            font-size: 14px;
+            margin-top: 20px;
+            padding: 10px;
+            border-radius: 5px;
+            background: #ecf0f1;
             text-align: center;
         }
-        .error {
-            background-color: #ffebee;
-            color: #c62828;
+        
+        .status.listening {
+            background: #e8f5e9;
+            color: #2e7d32;
         }
-        .listening-indicator {
-            position: absolute;
-            top: 10px;
-            right: 10px;
+        
+        .status.processing {
+            background: #fff8e1;
+            color: #f57f17;
+        }
+        
+        .conversation {
+            margin-top: 20px;
+            max-height: 300px;
+            overflow-y: auto;
+            border: 1px solid #ddd;
+            border-radius: 8px;
+            padding: 15px;
+            background: white;
+        }
+        
+        .query {
+            background: #e8f5f9;
+            padding: 10px;
+            border-radius: 5px;
+            margin-bottom: 10px;
+        }
+        
+        .answer {
+            background: #f0f4c3;
+            padding: 10px;
+            border-radius: 5px;
+            margin-bottom: 20px;
+        }
+        
+        /* Spinner for loading states */
+        .spinner {
+            display: inline-block;
             width: 20px;
             height: 20px;
+            border: 3px solid rgba(255,255,255,.3);
             border-radius: 50%;
-            background-color: #f44336;
-            animation: pulse 1.5s infinite;
-            display: none; /* Hidden initially */
-            will-change: transform, box-shadow;
+            border-top-color: #fff;
+            animation: spin 1s ease-in-out infinite;
         }
-        .listening-active .listening-indicator {
-            display: block;
+        
+        @keyframes spin {
+            to { transform: rotate(360deg); }
         }
-        .speaking-indicator {
-            position: absolute;
-            top: 10px;
-            left: 10px;
-            width: 20px;
-            height: 20px;
-            border-radius: 50%;
-            background-color: #2196F3;
-            animation: pulse 1.5s infinite;
-            display: none; /* Hidden initially */
-            will-change: transform, box-shadow;
-        }
-        .speaking-active .speaking-indicator {
-            display: block;
-        }
-        @keyframes pulse {
-            0% {
-                transform: scale(0.95);
-                box-shadow: 0 0 0 0 rgba(255, 0, 0, 0.7);
-            }
-            
-            70% {
-                transform: scale(1);
-                box-shadow: 0 0 0 10px rgba(255, 0, 0, 0);
-            }
-            
-            100% {
-                transform: scale(0.95);
-                box-shadow: 0 0 0 0 rgba(255, 0, 0, 0);
-            }
-        }
-        #audio-player {
+        
+        .hidden {
             display: none;
+        }
+        
+        .error-message {
+            background: #ffebee;
+            color: #c62828;
+            padding: 10px;
+            border-radius: 5px;
+            margin-top: 10px;
+            text-align: center;
+        }
+        
+        .camera-permissions-needed {
+            text-align: center;
+            padding: 20px;
+            background: #fff3e0;
+            border-radius: 8px;
+            margin: 20px auto;
+            max-width: 500px;
         }
     </style>
 </head>
 <body>
-    <div class="container">
-        <h1>Görüntü ve Ses Tabanlı Sohbet Asistanı</h1>
-        
-        <div class="video-container listening-active">
-            <img id="video" src="{{ url_for('video_feed') }}" alt="Video stream" loading="eager">
-            <div id="listening-indicator" class="listening-indicator"></div>
-            <div id="speaking-indicator" class="speaking-indicator"></div>
-        </div>
-        
-        <div class="controls">
-            <button id="analyze-btn">Ekrandakini Analiz Et</button>
-            <button id="listening-btn" class="listening">Dinlemeyi Durdur</button>
-        </div>
-        
-        <div class="transcript-container">
-            <h2>Sohbet Geçmişi</h2>
-            <div id="transcript">
-                <p class="system-message">Sisteme hoş geldiniz! Kameraya gösterdiğiniz nesneler hakkında sesli sorular sorabilirsiniz.</p>
-            </div>
-            <div class="status" id="status">Sesli komutlar için dinleme aktif...</div>
-        </div>
-        
-        <!-- Hidden audio player -->
-        <audio id="audio-player" controls preload="none"></audio>
+    <h1>Görüntü Sesli Soru Uygulaması</h1>
+    
+    <div class="camera-container">
+        <video id="camera" autoplay playsinline></video>
     </div>
-
+    
+    <div id="camera-permissions-needed" class="camera-permissions-needed hidden">
+        <p>Bu uygulama çalışabilmek için kamera erişimine ihtiyaç duyuyor.</p>
+        <button id="request-camera">Kamera İzni Ver</button>
+    </div>
+    
+    <div class="controls">
+        <button id="analyze-button">Görüntüyü Analiz Et</button>
+        <button id="toggle-listening" class="active">Dinlemeyi Durdur</button>
+    </div>
+    
+    <div class="status listening" id="status">
+        Dinleniyor... Bir soru sorun veya "Görüntüyü Analiz Et" düğmesine basın.
+    </div>
+    
+    <div class="conversation" id="conversation">
+        <!-- Conversation history will be added here -->
+    </div>
+    
+    <script src="https://cdn.socket.io/4.4.1/socket.io.min.js"></script>
     <script>
-        // DOM elements - use function to get them on-demand to improve page load time
-        const getElements = () => {
-            return {
-                analyzeBtn: document.getElementById('analyze-btn'),
-                listeningBtn: document.getElementById('listening-btn'),
-                transcriptElement: document.getElementById('transcript'),
-                statusElement: document.getElementById('status'),
-                listeningIndicator: document.getElementById('listening-indicator'),
-                speakingIndicator: document.getElementById('speaking-indicator'),
-                audioPlayer: document.getElementById('audio-player'),
-                videoContainer: document.querySelector('.video-container')
-            };
-        };
+        // DOM elements
+        const cameraElement = document.getElementById('camera');
+        const analyzeButton = document.getElementById('analyze-button');
+        const toggleListeningButton = document.getElementById('toggle-listening');
+        const statusElement = document.getElementById('status');
+        const conversationElement = document.getElementById('conversation');
+        const cameraPermissionsEl = document.getElementById('camera-permissions-needed');
+        const requestCameraButton = document.getElementById('request-camera');
         
-        // Variables
-        let isListening = true; // Start with listening active
-        let isSpeaking = false; // Is the assistant speaking
-        let queuePollingInterval = null;
-        let messageCounter = 0;
-        let lastAPICall = 0;
-        const API_COOLDOWN = 2000; // 2 seconds cooldown between API calls
-        let pendingScrolls = [];
+        // Global variables
+        let isListening = true;
+        let stream = null;
+        let videoTrack = null;
+        let socket = null;
+        let audioElement = null;
+        let frameInterval = null;
+        let connectionAttempts = 0;
+        const MAX_CONNECTION_ATTEMPTS = 3;
         
-        // Debounce function for performance improvement
-        function debounce(func, wait) {
-            let timeout;
-            return function(...args) {
-                clearTimeout(timeout);
-                timeout = setTimeout(() => func.apply(this, args), wait);
-            };
-        }
-
-        // Initialize Socket.IO
-        const socket = io();
-        
-        // Socket.IO event handlers
-        socket.on('connect', () => {
-            console.log('Connected to server');
-            updateListeningStatus(true);
-        });
-        
-        socket.on('disconnect', () => {
-            console.log('Disconnected from server');
-        });
-        
-        socket.on('listening_status', (data) => {
-            updateListeningStatus(data.is_listening, data.reason);
-        });
-        
-        // Function to update listening status
-        function updateListeningStatus(listening, reason) {
-            const elements = getElements();
-            isListening = listening;
-            
-            if (listening) {
-                elements.videoContainer.classList.add('listening-active');
-                elements.videoContainer.classList.remove('speaking-active');
-                elements.statusElement.textContent = "Sesli komutlar için dinleme aktif...";
-                if (reason === 'tts_complete') {
-                    addToTranscript('system-message', 'Asistan konuşmayı bitirdi, dinleme tekrar aktif.');
-                }
-            } else {
-                elements.videoContainer.classList.remove('listening-active');
-                if (reason === 'processing') {
-                    elements.videoContainer.classList.add('speaking-active');
-                    elements.statusElement.textContent = "İşleniyor ve yanıtlanıyor... Lütfen bekleyin.";
-                }
-            }
-        }
-        
-        // Function to add message to transcript with performance improvements
-        function addToTranscript(type, text, audioFile = null) {
-            const elements = getElements();
-            const messageId = `message-${messageCounter++}`;
-            const messageElement = document.createElement('div');
-            messageElement.classList.add(type);
-            messageElement.id = messageId;
-            
-            if (type === 'query') {
-                messageElement.textContent = `Siz: ${text}`;
-            } else if (type === 'answer') {
-                messageElement.textContent = `Asistan: ${text}`;
+        // Initialize the app
+        async function init() {
+            try {
+                // Connect to SocketIO server
+                connectSocket();
                 
-                // If there's an audio file, add a play button
-                if (audioFile) {
-                    const playButton = document.createElement('span');
-                    playButton.classList.add('play-button');
-                    playButton.textContent = '▶ Dinle';
-                    playButton.onclick = function() {
-                        playAudio(audioFile);
-                    };
-                    messageElement.appendChild(playButton);
-                    
-                    // Auto-play the audio
-                    window.setTimeout(() => playAudio(audioFile), 100);
-                }
-            } else if (type === 'system-message') {
-                messageElement.textContent = text;
+                // Setup button event listeners
+                analyzeButton.addEventListener('click', analyzeCurrentFrame);
+                toggleListeningButton.addEventListener('click', toggleListening);
+                requestCameraButton.addEventListener('click', requestCameraAccess);
+                
+                // Setup polling for audio queue
+                setInterval(checkAudioQueue, 1000);
+                
+                // Initial UI update
+                updateListeningUI();
+                
+            } catch (error) {
+                console.error('Initialization error:', error);
+                updateStatus('Hata: Uygulama başlatılamadı. Lütfen konsolu kontrol edin.', 'error');
             }
-            
-            elements.transcriptElement.appendChild(messageElement);
-            
-            // Schedule a scroll for better performance
-            requestAnimationFrame(() => {
-                elements.transcriptElement.scrollTop = elements.transcriptElement.scrollHeight;
+        }
+        
+        function connectSocket() {
+            // Connect to Socket.IO server with automatic reconnection
+            socket = io({
+                reconnectionAttempts: MAX_CONNECTION_ATTEMPTS,
+                reconnectionDelay: 1000,
+                reconnectionDelayMax: 5000,
+                timeout: 20000
             });
             
-            return messageId;
+            // Setup event listeners for SocketIO
+            socket.on('connect', () => {
+                console.log('Connected to server');
+                updateStatus('Bağlantı kuruldu. Dinleniyor...', 'listening');
+                connectionAttempts = 0;
+            });
+            
+            socket.on('connect_error', (error) => {
+                console.error('Connection error:', error);
+                connectionAttempts++;
+                if (connectionAttempts >= MAX_CONNECTION_ATTEMPTS) {
+                    updateStatus('Sunucu ile bağlantı kurulamadı. Sayfayı yenileyin.', 'error');
+                } else {
+                    updateStatus(`Sunucu ile bağlantı kurulamadı, yeniden deneniyor (${connectionAttempts}/${MAX_CONNECTION_ATTEMPTS})...`, 'error');
+                }
+            });
+            
+            socket.on('disconnect', () => {
+                console.log('Disconnected from server');
+                updateStatus('Sunucu ile bağlantı kesildi', 'error');
+            });
+            
+            socket.on('listening_status', (data) => {
+                isListening = data.is_listening;
+                updateListeningUI();
+                
+                if (data.reason === 'processing') {
+                    updateStatus('İşleniyor...', 'processing');
+                } else if (data.reason === 'tts_complete') {
+                    updateStatus('Dinleniyor...', 'listening');
+                }
+            });
+            
+            socket.on('request_camera', async () => {
+                console.log('Server requested camera access');
+                await requestCameraAccess();
+            });
         }
         
-        // Function to play audio and notify server when complete
-        function playAudio(audioFile) {
-            const elements = getElements();
-            // Set the audio source
-            elements.audioPlayer.src = audioFile;
-            
-            // Show speaking indicator and hide listening indicator
-            elements.videoContainer.classList.add('speaking-active');
-            elements.videoContainer.classList.remove('listening-active');
-            elements.statusElement.textContent = "Asistan konuşuyor...";
-            
-            // Play the audio
-            elements.audioPlayer.play();
-            
-            // When audio ends, notify the server
-            elements.audioPlayer.onended = function() {
-                console.log("Audio playback complete");
-                // Notify the server that audio playback is complete
-                socket.emit('audio_completed', {});
-                // Update UI
-                elements.videoContainer.classList.remove('speaking-active');
-                elements.statusElement.textContent = "Sesli komutlar için dinleme aktif...";
-            };
+        // Request camera access
+        async function requestCameraAccess() {
+            try {
+                // Hide the camera permissions element
+                cameraPermissionsEl.classList.add('hidden');
+                
+                await setupCamera();
+                return true;
+                
+            } catch (error) {
+                console.error('Camera access error:', error);
+                showCameraPermissionsNeeded();
+                return false;
+            }
         }
         
-        // Function to analyze the current frame with rate limiting
-        const analyzeCurrentFrame = debounce(async function() {
-            const elements = getElements();
-            
-            // Rate limit API calls
-            const now = Date.now();
-            if (now - lastAPICall < API_COOLDOWN) {
-                elements.statusElement.textContent = "Lütfen biraz bekleyin...";
-                setTimeout(() => {
-                    elements.statusElement.textContent = "Sesli komutlar için dinleme aktif...";
-                }, 1000);
-                return;
+        // Show camera permissions needed UI
+        function showCameraPermissionsNeeded() {
+            cameraPermissionsEl.classList.remove('hidden');
+            updateStatus('Kamera izni gerekiyor', 'error');
+        }
+        
+        // Setup camera access
+        async function setupCamera() {
+            try {
+                if (stream) {
+                    // Stop any existing stream
+                    stream.getTracks().forEach(track => track.stop());
+                }
+                
+                // Request camera access
+                stream = await navigator.mediaDevices.getUserMedia({
+                    video: {
+                        width: { ideal: 640 },
+                        height: { ideal: 480 },
+                        facingMode: { ideal: 'environment' } // Use back camera on mobile devices if available
+                    },
+                    audio: false
+                });
+                
+                // Connect stream to video element
+                cameraElement.srcObject = stream;
+                
+                // Get video track for frame capture
+                videoTrack = stream.getVideoTracks()[0];
+                
+                // Start sending frames to the server
+                startSendingFrames();
+                
+                return true;
+                
+            } catch (error) {
+                console.error('Camera setup error:', error);
+                
+                if (error.name === 'NotAllowedError' || error.name === 'PermissionDeniedError') {
+                    updateStatus('Kamera erişimine izin verilmedi', 'error');
+                    showCameraPermissionsNeeded();
+                } else {
+                    updateStatus('Hata: Kamera erişimi sağlanamadı', 'error');
+                }
+                
+                return false;
+            }
+        }
+        
+        // Start sending frames to server
+        function startSendingFrames() {
+            // Clear any existing interval
+            if (frameInterval) {
+                clearInterval(frameInterval);
             }
             
+            // Setup canvas for frame capture
+            const canvas = document.createElement('canvas');
+            canvas.width = 640;
+            canvas.height = 480;
+            const ctx = canvas.getContext('2d');
+            
+            // Send frames at regular interval
+            frameInterval = setInterval(() => {
+                if (videoTrack && videoTrack.readyState === 'live' && cameraElement.readyState >= 2) {
+                    try {
+                        // Draw current frame to canvas
+                        ctx.drawImage(cameraElement, 0, 0, canvas.width, canvas.height);
+                        
+                        // Get as base64 image with reduced quality
+                        const imageData = canvas.toDataURL('image/jpeg', 0.6); // Lower quality (0.6) for faster transfer
+                        
+                        // Send to server if connected
+                        if (socket && socket.connected) {
+                            socket.emit('client_frame', { image: imageData });
+                        }
+                    } catch (err) {
+                        console.error('Error sending frame:', err);
+                    }
+                }
+            }, 300); // Send ~3 frames per second (reduced to save bandwidth)
+        }
+        
+        // Stop sending frames
+        function stopSendingFrames() {
+            if (frameInterval) {
+                clearInterval(frameInterval);
+                frameInterval = null;
+            }
+        }
+        
+        // Update status message
+        function updateStatus(message, type) {
+            statusElement.textContent = message;
+            statusElement.className = 'status ' + type;
+        }
+        
+        // Update the UI to match listening state
+        function updateListeningUI() {
+            if (isListening) {
+                toggleListeningButton.textContent = 'Dinlemeyi Durdur';
+                toggleListeningButton.classList.add('active');
+                updateStatus('Dinleniyor...', 'listening');
+            } else {
+                toggleListeningButton.textContent = 'Dinlemeyi Başlat';
+                toggleListeningButton.classList.remove('active');
+                updateStatus('Dinleme duraklatıldı', 'processing');
+            }
+        }
+        
+        // Analyze the current frame
+        async function analyzeCurrentFrame() {
             try {
-                lastAPICall = now;
-                elements.analyzeBtn.disabled = true;
-                elements.statusElement.textContent = "Görüntü analiz ediliyor...";
+                // Check if connected
+                if (!socket || !socket.connected) {
+                    updateStatus('Sunucuya bağlı değil', 'error');
+                    return;
+                }
                 
-                // Update UI to show speaking mode
-                elements.videoContainer.classList.add('speaking-active');
-                elements.videoContainer.classList.remove('listening-active');
+                // Disable button during processing
+                analyzeButton.disabled = true;
+                analyzeButton.innerHTML = '<span class="spinner"></span> İşleniyor...';
                 
+                // Update status
+                updateStatus('Görüntü analiz ediliyor...', 'processing');
+                
+                // Send request to server
                 const response = await fetch('/analyze_current_frame', {
-                    method: 'POST'
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' }
                 });
                 
                 if (!response.ok) {
                     const errorData = await response.json();
-                    throw new Error(errorData.error || 'Kare analizi başarısız oldu');
+                    throw new Error(errorData.error || `Server responded with ${response.status}`);
                 }
                 
                 const data = await response.json();
                 
-                // Add to transcript
-                addToTranscript('query', 'Ekrandaki görüntüyü analiz et.');
-                addToTranscript('answer', data.analysis, data.audio_file);
+                // Add to conversation
+                addToConversation('Görüntü analizi istendi', data.analysis);
                 
-                elements.statusElement.textContent = "Analiz tamamlandı ve sesli yanıt verildi.";
+                // Play audio if available
+                if (data.audio_file) {
+                    playAudio(data.audio_file);
+                }
                 
             } catch (error) {
-                elements.statusElement.textContent = `Hata: ${error.message}`;
-                elements.statusElement.classList.add('error');
-                
-                // Reset UI
-                elements.videoContainer.classList.remove('speaking-active');
-                elements.videoContainer.classList.add('listening-active');
-                
-                // Notify server to resume listening
-                socket.emit('audio_completed', {});
+                console.error('Analysis error:', error);
+                updateStatus(`Hata: Analiz başarısız oldu - ${error.message}`, 'error');
             } finally {
-                elements.analyzeBtn.disabled = false;
-                setTimeout(() => {
-                    elements.statusElement.classList.remove('error');
-                }, 3000);
+                // Re-enable button
+                analyzeButton.disabled = false;
+                analyzeButton.textContent = 'Görüntüyü Analiz Et';
             }
-        }, 500); // Debounce for 500ms
-
-        // Function to toggle continuous listening (with debounce)
-        const toggleListening = debounce(async function() {
-            const elements = getElements();
-            
+        }
+        
+        // Toggle listening state
+        async function toggleListening() {
             try {
-                elements.listeningBtn.disabled = true;
+                // Check if connected
+                if (!socket || !socket.connected) {
+                    updateStatus('Sunucuya bağlı değil', 'error');
+                    return;
+                }
                 
+                // Disable button during processing
+                toggleListeningButton.disabled = true;
+                
+                // Send request to server
                 const response = await fetch('/toggle_listening', {
                     method: 'POST'
                 });
                 
                 if (!response.ok) {
-                    const errorData = await response.json();
-                    throw new Error(errorData.error || 'Dinleme durumu değiştirilemedi');
+                    throw new Error(`Server responded with ${response.status}`);
                 }
                 
                 const data = await response.json();
-                isListening = data.is_listening;
                 
-                if (isListening) {
-                    elements.listeningBtn.textContent = "Dinlemeyi Durdur";
-                    elements.listeningBtn.classList.add('listening');
-                    updateListeningStatus(true);
-                    
-                    // Add system message
-                    addToTranscript('system-message', 'Sesli komut dinleme aktifleştirildi.');
-                    
-                    // Start polling for audio processing results
-                    startQueuePolling();
-                } else {
-                    elements.listeningBtn.textContent = "Dinlemeyi Başlat";
-                    elements.listeningBtn.classList.remove('listening');
-                    updateListeningStatus(false);
-                    elements.statusElement.textContent = "Dinleme durdu. Başlatmak için 'Dinlemeyi Başlat' butonuna basın.";
-                    
-                    // Add system message
-                    addToTranscript('system-message', 'Sesli komut dinleme durduruldu.');
-                    
-                    // Stop polling
-                    stopQueuePolling();
+                // Update UI based on server response
+                isListening = data.is_listening;
+                updateListeningUI();
+                
+            } catch (error) {
+                console.error('Toggle listening error:', error);
+                updateStatus('Hata: Dinleme durumu değiştirilemedi', 'error');
+            } finally {
+                // Re-enable button
+                toggleListeningButton.disabled = false;
+            }
+        }
+        
+        // Check for audio responses from the server
+        async function checkAudioQueue() {
+            try {
+                if (!socket || !socket.connected) {
+                    return; // Don't check if not connected
+                }
+                
+                const response = await fetch('/get_audio_queue');
+                if (!response.ok) {
+                    return;
+                }
+                
+                const data = await response.json();
+                
+                // Handle different response types
+                if (data.type === 'conversation') {
+                    addToConversation(data.query, data.answer);
+                    if (data.audio_file) {
+                        playAudio(data.audio_file);
+                    }
+                } else if (data.type === 'error') {
+                    updateStatus(`Hata: ${data.message}`, 'error');
                 }
                 
             } catch (error) {
-                const elements = getElements();
-                elements.statusElement.textContent = `Hata: ${error.message}`;
-                elements.statusElement.classList.add('error');
-            } finally {
-                elements.listeningBtn.disabled = false;
+                // Silently handle errors here, to avoid cluttering the console
+                // on frequent polling errors
             }
-        }, 300); // Debounce for 300ms
-
-        // Start polling for speech processing results
-        function startQueuePolling() {
-            if (queuePollingInterval) {
-                clearInterval(queuePollingInterval);
+        }
+        
+        // Add a conversation entry
+        function addToConversation(query, answer) {
+            const queryElement = document.createElement('div');
+            queryElement.className = 'query';
+            queryElement.textContent = query;
+            
+            const answerElement = document.createElement('div');
+            answerElement.className = 'answer';
+            answerElement.textContent = answer;
+            
+            conversationElement.appendChild(queryElement);
+            conversationElement.appendChild(answerElement);
+            
+            // Scroll to bottom
+            conversationElement.scrollTop = conversationElement.scrollHeight;
+        }
+        
+        // Play audio and notify server when complete
+        function playAudio(audioFile) {
+            // Stop any existing audio
+            if (audioElement) {
+                audioElement.pause();
+                audioElement.removeEventListener('ended', audioEndedHandler);
             }
             
-            queuePollingInterval = setInterval(async () => {
-                try {
-                    const response = await fetch('/get_audio_queue');
-                    const data = await response.json();
-                    
-                    if (data.type === 'conversation') {
-                        // Add to transcript
-                        addToTranscript('query', data.query);
-                        addToTranscript('answer', data.answer, data.audio_file);
-                    } else if (data.type === 'error') {
-                        const elements = getElements();
-                        console.error('Konuşma işleme hatası:', data.message);
-                        elements.statusElement.textContent = `Hata: ${data.message}`;
-                        elements.statusElement.classList.add('error');
-                        setTimeout(() => {
-                            elements.statusElement.textContent = isListening ? 
-                                "Sesli komutlar için dinleme aktif..." : 
-                                "Dinleme durdu. Başlatmak için 'Dinlemeyi Başlat' butonuna basın.";
-                            elements.statusElement.classList.remove('error');
-                        }, 3000);
-                        
-                        // Make sure to resume listening
-                        socket.emit('audio_completed', {});
-                    }
-                } catch (error) {
-                    // Ignore errors from empty queue
-                    if (error.name !== 'SyntaxError') {
-                        console.error('Queue polling error:', error);
-                    }
+            // Create new audio element
+            audioElement = new Audio(audioFile);
+            
+            // Set up event listener for when audio finishes
+            audioElement.addEventListener('ended', audioEndedHandler);
+            
+            // Start playing
+            audioElement.play().catch(error => {
+                console.error('Audio playback error:', error);
+                // Notify server anyway to resume listening
+                if (socket && socket.connected) {
+                    socket.emit('audio_completed', {});
                 }
-            }, 500);  // Poll every 500ms
-        }
-
-        // Stop polling
-        function stopQueuePolling() {
-            if (queuePollingInterval) {
-                clearInterval(queuePollingInterval);
-                queuePollingInterval = null;
+            });
+            
+            function audioEndedHandler() {
+                // Notify server that audio playback is complete
+                if (socket && socket.connected) {
+                    socket.emit('audio_completed', {});
+                }
             }
         }
-
-        // Wait for the DOM to be fully loaded before attaching event handlers
-        document.addEventListener('DOMContentLoaded', () => {
-            const elements = getElements();
-            
-            // Event listeners
-            elements.analyzeBtn.addEventListener('click', analyzeCurrentFrame);
-            elements.listeningBtn.addEventListener('click', toggleListening);
-            
-            // Initialize
-            startQueuePolling(); // Start polling immediately since listening is active by default
-        });
-
-        // Cleanup on page unload
+        
+        // Clean up resources before unloading
         window.addEventListener('beforeunload', async () => {
             try {
-                stopQueuePolling();
+                // Stop sending frames
+                stopSendingFrames();
                 
-                // Use navigator.sendBeacon for more reliable cleanup during page unload
-                navigator.sendBeacon('/cleanup', '');
+                // Stop video stream
+                if (stream) {
+                    stream.getTracks().forEach(track => track.stop());
+                }
+                
+                // Notify server
+                if (socket && socket.connected) {
+                    await fetch('/cleanup', {
+                        method: 'POST'
+                    });
+                }
+                
             } catch (error) {
-                console.error('Error during cleanup:', error);
+                console.error('Cleanup error:', error);
             }
         });
+        
+        // Start the app
+        init();
     </script>
 </body>
 </html>
