@@ -61,26 +61,65 @@
             cursor: not-allowed;
         }
         
-        button#toggle-listening.active {
-            background: #e74c3c;
-        }
-        
         .status {
             margin-top: 20px;
             padding: 10px;
             border-radius: 5px;
             background: #ecf0f1;
             text-align: center;
+            position: relative;
         }
         
-        .status.listening {
+        .status.active {
             background: #e8f5e9;
             color: #2e7d32;
+        }
+        
+        .status.passive {
+            background: #fff3e0;
+            color: #e65100;
+        }
+        
+        .status.speaking {
+            background: #ffebee;
+            color: #c62828;
         }
         
         .status.processing {
             background: #fff8e1;
             color: #f57f17;
+        }
+        
+        .status-indicator {
+            display: inline-block;
+            width: 12px;
+            height: 12px;
+            border-radius: 50%;
+            margin-right: 8px;
+            vertical-align: middle;
+        }
+        
+        .status.active .status-indicator {
+            background-color: #2ecc71;
+        }
+        
+        .status.passive .status-indicator {
+            background-color: #f39c12;
+        }
+        
+        .status.speaking .status-indicator {
+            background-color: #e74c3c;
+            animation: pulse 1.5s infinite;
+        }
+        
+        .status.processing .status-indicator {
+            background-color: #f1c40f;
+        }
+        
+        @keyframes pulse {
+            0% { opacity: 0.5; }
+            50% { opacity: 1; }
+            100% { opacity: 0.5; }
         }
         
         .conversation {
@@ -159,11 +198,12 @@
     
     <div class="controls">
         <button id="analyze-button">Görüntüyü Analiz Et</button>
-        <button id="toggle-listening" class="active">Dinlemeyi Durdur</button>
+        <button id="toggle-listening">Dinleme Modunu Değiştir</button>
     </div>
     
-    <div class="status listening" id="status">
-        Dinleniyor... Bir soru sorun veya "Görüntüyü Analiz Et" düğmesine basın.
+    <div class="status passive" id="status">
+        <span class="status-indicator"></span>
+        Pasif dinleme modu - ses algılandığında aktifleşir
     </div>
     
     <div class="conversation" id="conversation">
@@ -182,7 +222,9 @@
         const requestCameraButton = document.getElementById('request-camera');
         
         // Global variables
-        let isListening = true;
+        let isListening = false; 
+        let isPassiveListening = true; // Start assuming passive listening is on
+        let isSpeaking = false;
         let stream = null;
         let videoTrack = null;
         let socket = null;
@@ -205,12 +247,47 @@
                 // Setup polling for audio queue
                 setInterval(checkAudioQueue, 1000);
                 
-                // Initial UI update
-                updateListeningUI();
+                // Poll for status updates
+                setInterval(updateListeningStatus, 2000);
                 
             } catch (error) {
                 console.error('Initialization error:', error);
                 updateStatus('Hata: Uygulama başlatılamadı. Lütfen konsolu kontrol edin.', 'error');
+            }
+        }
+        
+        // Update the listening status from server
+        async function updateListeningStatus() {
+            try {
+                if (!socket || !socket.connected) {
+                    return; // Don't check if not connected
+                }
+                
+                const response = await fetch('/listening_status');
+                if (!response.ok) {
+                    return;
+                }
+                
+                const data = await response.json();
+                
+                // Update our local state
+                isListening = data.is_listening;
+                isPassiveListening = data.is_passive_listening;
+                isSpeaking = data.is_speaking;
+                
+                // Update UI based on current status
+                if (isSpeaking) {
+                    updateStatus('Yanıt okunuyor...', 'speaking');
+                } else if (isListening) {
+                    updateStatus('Aktif dinleme modu - konuşmanızı bekliyorum', 'active');
+                } else if (isPassiveListening) {
+                    updateStatus('Pasif dinleme modu - ses algılandığında aktifleşir', 'passive');
+                } else {
+                    updateStatus('Dinleme kapalı', 'inactive');
+                }
+                
+            } catch (error) {
+                // Silent error handling
             }
         }
         
@@ -226,8 +303,9 @@
             // Setup event listeners for SocketIO
             socket.on('connect', () => {
                 console.log('Connected to server');
-                updateStatus('Bağlantı kuruldu. Dinleniyor...', 'listening');
+                updateStatus('Bağlantı kuruldu. Pasif dinleme modunda.', 'passive');
                 connectionAttempts = 0;
+                updateListeningStatus(); // Get initial status
             });
             
             socket.on('connect_error', (error) => {
@@ -247,12 +325,28 @@
             
             socket.on('listening_status', (data) => {
                 isListening = data.is_listening;
-                updateListeningUI();
                 
                 if (data.reason === 'processing') {
                     updateStatus('İşleniyor...', 'processing');
+                    isSpeaking = true;
                 } else if (data.reason === 'tts_complete') {
-                    updateStatus('Dinleniyor...', 'listening');
+                    updateStatus('Aktif dinleme modu - konuşmanızı bekliyorum', 'active');
+                    isSpeaking = false;
+                } else if (data.reason === 'activated') {
+                    updateStatus('Aktif dinleme modu - konuşmanızı bekliyorum', 'active');
+                    isSpeaking = false;
+                } else if (data.reason === 'deactivated') {
+                    updateStatus('Pasif dinleme modu - ses algılandığında aktifleşir', 'passive');
+                    isSpeaking = false;
+                } else if (data.reason === 'passive') {
+                    updateStatus('Pasif dinleme modu - ses algılandığında aktifleşir', 'passive');
+                    isSpeaking = false;
+                } else if (data.reason === 'inactive') {
+                    updateStatus('Dinleme kapalı', 'inactive');
+                    isSpeaking = false;
+                } else if (data.reason === 'speaking') {
+                    updateStatus('Yanıt okunuyor...', 'speaking');
+                    isSpeaking = true;
                 }
             });
             
@@ -371,20 +465,40 @@
         
         // Update status message
         function updateStatus(message, type) {
-            statusElement.textContent = message;
-            statusElement.className = 'status ' + type;
+            statusElement.innerHTML = `<span class="status-indicator"></span>${message}`;
+            statusElement.className = 'status ' + (type || '');
         }
         
-        // Update the UI to match listening state
-        function updateListeningUI() {
-            if (isListening) {
-                toggleListeningButton.textContent = 'Dinlemeyi Durdur';
-                toggleListeningButton.classList.add('active');
-                updateStatus('Dinleniyor...', 'listening');
-            } else {
-                toggleListeningButton.textContent = 'Dinlemeyi Başlat';
-                toggleListeningButton.classList.remove('active');
-                updateStatus('Dinleme duraklatıldı', 'processing');
+        // Toggle between passive and active listening
+        async function toggleListening() {
+            try {
+                // Check if connected
+                if (!socket || !socket.connected) {
+                    updateStatus('Sunucuya bağlı değil', 'error');
+                    return;
+                }
+                
+                // Disable button during processing
+                toggleListeningButton.disabled = true;
+                
+                // Send request to server
+                const response = await fetch('/toggle_listening', {
+                    method: 'POST'
+                });
+                
+                if (!response.ok) {
+                    throw new Error(`Server responded with ${response.status}`);
+                }
+                
+                // Re-enable button
+                toggleListeningButton.disabled = false;
+                
+                // Status will be updated via the socket event or the polling
+                
+            } catch (error) {
+                console.error('Toggle listening error:', error);
+                updateStatus('Hata: Dinleme durumu değiştirilemedi', 'error');
+                toggleListeningButton.disabled = false;
             }
         }
         
@@ -432,42 +546,6 @@
                 // Re-enable button
                 analyzeButton.disabled = false;
                 analyzeButton.textContent = 'Görüntüyü Analiz Et';
-            }
-        }
-        
-        // Toggle listening state
-        async function toggleListening() {
-            try {
-                // Check if connected
-                if (!socket || !socket.connected) {
-                    updateStatus('Sunucuya bağlı değil', 'error');
-                    return;
-                }
-                
-                // Disable button during processing
-                toggleListeningButton.disabled = true;
-                
-                // Send request to server
-                const response = await fetch('/toggle_listening', {
-                    method: 'POST'
-                });
-                
-                if (!response.ok) {
-                    throw new Error(`Server responded with ${response.status}`);
-                }
-                
-                const data = await response.json();
-                
-                // Update UI based on server response
-                isListening = data.is_listening;
-                updateListeningUI();
-                
-            } catch (error) {
-                console.error('Toggle listening error:', error);
-                updateStatus('Hata: Dinleme durumu değiştirilemedi', 'error');
-            } finally {
-                // Re-enable button
-                toggleListeningButton.disabled = false;
             }
         }
         
